@@ -143,7 +143,7 @@ export function createTextStream(request: TextGenerateRequest, requestSignal?: A
   const send = (controller: ReadableStreamDefaultController<Uint8Array>, event: string, data: unknown) => {
     if (clientClosed) return;
     try { controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)); }
-    catch { clientClosed = true; localAbort.abort(); }
+    catch { clientClosed = true; }
   };
 
   return new ReadableStream<Uint8Array>({
@@ -202,6 +202,6 @@ export function createTextStream(request: TextGenerateRequest, requestSignal?: A
         if (!clientClosed) try { controller.close(); } catch { /* Client already disconnected. */ }
       }
     },
-    cancel() { clientClosed = true; localAbort.abort(); },
+    cancel() { clientClosed = true; },
   });
 }

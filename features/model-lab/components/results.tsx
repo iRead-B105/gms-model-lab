@@ -14,7 +14,7 @@ export function ImageResult({ run }: { run: RunLog | null }) {
   const image = run.images[0];
   const imagesPerMinute = run.images.length && run.timings.totalMs > 0 ? run.images.length * 60_000 / run.timings.totalMs : undefined;
 
-  return <><div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_250px]"><div className="preview-grid relative grid min-h-[430px] place-items-center overflow-hidden rounded-xl border border-slate-200 bg-slate-100">{image ? <Image src={image.url} alt="생성 결과" fill unoptimized sizes="(min-width: 1280px) 55vw, 100vw" className="object-contain" /> : <ErrorResult message={run.error} />}{run.status === "error" && image && <div className="absolute inset-x-3 bottom-3 rounded-lg bg-red-950/85 px-3 py-2 text-xs text-white">이미지는 저장됐지만 후속 처리 중 오류가 발생했습니다. {run.error}</div>}{run.images.length > 1 && <Badge className="absolute right-3 top-3 bg-white/90">+{run.images.length - 1}장</Badge>}</div><div className="space-y-3"><Timing label="전체 완료" value={run.timings.totalMs} strong /><Timing label="API 생성" value={run.timings.apiMs} /><Timing label="생성 이미지" suffix={`${run.images.length}장`} /><Timing label="이미지 처리량" suffix={formatRate(imagesPerMinute, "장/분")} /><UsageCard run={run} />{run.images.map((item, index) => <a key={item.filename} href={item.url} download={item.filename} className="flex h-9 items-center justify-center gap-2 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50"><Download size={13} /> 이미지 {index + 1} 다운로드</a>)}</div></div><ResponseJsonCard run={run} /></>;
+  return <><div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_250px]"><div className="preview-grid relative grid min-h-[430px] place-items-center overflow-hidden rounded-xl border border-slate-200 bg-slate-100">{image ? <Image src={image.url} alt="생성 결과" fill unoptimized sizes="(min-width: 1280px) 55vw, 100vw" className="object-contain" /> : run.status === "success" ? <MetadataOnlyImageResult /> : <ErrorResult message={run.error} />}{run.status === "error" && image && <div className="absolute inset-x-3 bottom-3 rounded-lg bg-red-950/85 px-3 py-2 text-xs text-white">이미지는 저장됐지만 후속 처리 중 오류가 발생했습니다. {run.error}</div>}{run.images.length > 1 && <Badge className="absolute right-3 top-3 bg-white/90">+{run.images.length - 1}장</Badge>}</div><div className="space-y-3"><Timing label="전체 완료" value={run.timings.totalMs} strong /><Timing label="API 생성" value={run.timings.apiMs} /><Timing label="생성 이미지" suffix={`${run.images.length}장`} /><Timing label="이미지 처리량" suffix={formatRate(imagesPerMinute, "장/분")} /><UsageCard run={run} />{run.images.map((item, index) => <a key={item.filename} href={item.url} download={item.filename} className="flex h-9 items-center justify-center gap-2 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50"><Download size={13} /> 이미지 {index + 1} 다운로드</a>)}</div></div><ResponseJsonCard run={run} /></>;
 }
 
 export function TextResult({ run, liveOutput }: { run: RunLog | null; liveOutput: string }) {
@@ -67,6 +67,10 @@ function ResponseJsonCard({ run }: { run: RunLog }) {
 
 function ErrorResult({ message, dark = false }: { message?: string; dark?: boolean }) {
   return <div className="max-w-md px-8 text-center"><XCircle className={`mx-auto mb-3 ${dark ? "text-red-300" : "text-red-400"}`} /><p className="text-sm font-semibold">요청 실패</p><p className={`mt-2 text-xs leading-5 ${dark ? "text-slate-400" : "text-slate-500"}`}>{message || "알 수 없는 오류가 발생했습니다."}</p></div>;
+}
+
+function MetadataOnlyImageResult() {
+  return <div className="max-w-md px-8 text-center"><ImageIcon className="mx-auto mb-3 text-amber-500" /><p className="text-sm font-semibold">GMS 생성 성공 · 로컬 이미지 없음</p><p className="mt-2 text-xs leading-5 text-slate-500">공급자에서는 성공했지만 연결 종료 전에 Base64 원문을 받지 못해 이미지 파일은 복구할 수 없습니다. 응답 JSON과 사용량은 아래에서 확인할 수 있습니다.</p></div>;
 }
 
 function EmptyState({ kind }: { kind: TestKind }) {

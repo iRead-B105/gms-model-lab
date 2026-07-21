@@ -55,7 +55,8 @@ export function sanitizeCustom(custom: JsonObject | undefined, protectedFields: 
 
 export function safeError(value: unknown, secrets: string[] = []) {
   let message = value instanceof Error ? value.message : String(value);
-  if (/abort|timeout|timed out/i.test(message)) message = "요청 시간이 초과되었거나 사용자가 요청을 취소했습니다.";
+  if ((value instanceof Error && value.name === "AbortError") || /abort|timeout|timed out/i.test(message)) message = "요청 시간이 초과되었거나 연결이 종료되었습니다.";
+  if (!message.trim()) message = "원인을 확인할 수 없는 빈 오류가 발생했습니다.";
   message = message.replace(/(Bearer|x-api-key|x-goog-api-key)\s+[^\s"']+/gi, "$1 [REDACTED]");
   for (const secret of secrets.filter(Boolean)) message = message.split(secret).join("[REDACTED]");
   return message.slice(0, 1600);

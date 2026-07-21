@@ -131,6 +131,12 @@ export default function Home() {
   }, [loadLogs]);
 
   useEffect(() => {
+    if (running) return;
+    const interval = window.setInterval(() => void loadLogs(), 5_000);
+    return () => window.clearInterval(interval);
+  }, [loadLogs, running]);
+
+  useEffect(() => {
     const timer = window.setTimeout(() => {
       try {
         const storedKey = readStoredGmsKey();
@@ -515,7 +521,7 @@ export default function Home() {
 
   function cancelTests() {
     runAbortRef.current?.abort();
-    setNotice("진행 중인 요청을 취소하고 있습니다. 이미 GMS에 전달된 요청은 크레딧이 차감될 수 있습니다.");
+    setNotice("화면 대기를 중단했습니다. 이미 GMS에 전달된 작업은 서버에서 완료 후 로컬에 저장되며 기록 목록이 자동 갱신됩니다.");
   }
 
   function reuseRun(run: RunLog) {
