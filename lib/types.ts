@@ -42,6 +42,7 @@ export type RunLog = {
   textMetrics?: { ttftMs: number; tokensPerSecond?: number; characterCount: number };
   speechMetrics?: { timeToFirstByteMs?: number; characterCount: number; charactersPerSecond?: number };
   responseSummary?: Record<string, unknown>;
+  errorCode?: string;
   error?: string;
 };
 

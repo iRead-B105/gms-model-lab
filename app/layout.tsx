@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "GMS Model Lab",
-  description: "GMS 이미지·텍스트 모델의 지연시간과 크레딧을 비교하는 로컬 테스트 도구",
+  description: "GMS 이미지·텍스트·TTS 모델의 지연시간과 크레딧을 비교하는 로컬 테스트 도구",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",

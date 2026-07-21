@@ -115,6 +115,23 @@ test("요청 크기·파라미터 범위·시간 초과를 제한한다", async 
   assert.match(imageGeneration, /name !== "aspectRatio"/);
 });
 
+test("이미지 대신 프롬프트 텍스트를 요구하는 지시와 Gemini NO_IMAGE를 구체적으로 안내한다", async () => {
+  const [intent, imageGeneration, route, page] = await Promise.all([
+    import(new URL("../lib/prompt-intent.ts", import.meta.url)),
+    source("lib/server/gms/image-generation.ts"),
+    source("app/api/generate/route.ts"),
+    source("app/page.tsx"),
+  ]);
+
+  assert.equal(intent.looksLikePromptAuthoringInstruction("이미지 생성 프롬프트를 설계하세요. 최종 응답에는 완성된 프롬프트만 출력하세요."), true);
+  assert.equal(intent.looksLikePromptAuthoringInstruction("부드러운 파스텔 그림책 스타일로 작은 생쥐를 그려주세요."), false);
+  assert.match(imageGeneration, /NO_IMAGE/);
+  assert.match(imageGeneration, /텍스트 탭에서 프롬프트를 먼저 만든 뒤/);
+  assert.match(route, /errorCode === "NO_IMAGE" \? 422/);
+  assert.match(page, /NO_IMAGE 가능성이 높은 지시/);
+  assert.match(page, /window\.confirm/);
+});
+
 test("GPT Image 2 비율별 프리셋이 API 크기 제약을 만족한다", async () => {
   const sizing = await import(new URL("../lib/image-sizing.ts", import.meta.url));
   for (const ratio of sizing.IMAGE_ASPECT_RATIOS) {

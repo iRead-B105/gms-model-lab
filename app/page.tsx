@@ -15,6 +15,7 @@ import { TTS_RESPONSE_FORMATS, TTS_VOICES, type ModelInfo, type Provider, type R
 import { KNOWN_IMAGE_MODELS, KNOWN_TEXT_MODELS, KNOWN_TTS_MODELS } from "@/lib/model-catalog";
 import { findAspectRatioForSize, getImageAspectRatios, getImageSizePresets, IMAGE_ASPECT_RATIO_LABELS, supportsFlexibleOpenAISizes, type ImageAspectRatio } from "@/lib/image-sizing";
 import { getImageParameterDefaults, getTextParameterDefaults, TTS_PARAMETER_DEFAULTS } from "@/lib/model-defaults";
+import { looksLikePromptAuthoringInstruction } from "@/lib/prompt-intent";
 import { Field, labelClass, Metric, ModeButton, Panel } from "@/features/model-lab/components/layout";
 import { ModelSelector } from "@/features/model-lab/components/model-selector";
 import { DefaultableNumber, DefaultableRange, type OptionalNumber } from "@/features/model-lab/components/parameter-control";
@@ -97,6 +98,7 @@ export default function Home() {
   const modeLogs = useMemo(() => logs.filter((run) => runKind(run) === mode), [logs, mode]);
   const benchmarkLogs = useMemo(() => modeLogs.filter((run) => run.provider === provider && run.model === modelId), [modeLogs, provider, modelId]);
   const selected = modeLogs.find((run) => run.id === selectedId) || modeLogs[0] || null;
+  const imagePromptConflict = mode === "image" && looksLikePromptAuthoringInstruction(imageSystemPrompt);
 
   const loadLogs = useCallback(async () => {
     try {
@@ -370,6 +372,10 @@ export default function Home() {
     const prompt = mode === "image" ? imagePrompt : mode === "tts" ? ttsPrompt : textPrompt;
     if (!key.trim()) return setNotice("GMS 키를 입력해주세요.");
     if (!prompt.trim()) return setNotice(mode === "tts" ? "합성할 텍스트를 입력해주세요." : "사용자 프롬프트를 입력해주세요.");
+    if (mode === "image" && imagePromptConflict) {
+      const proceed = window.confirm("현재 시스템 프롬프트는 이미지를 생성하는 대신 ‘이미지 생성 프롬프트 텍스트’를 출력하도록 요구합니다. Gemini 이미지 모델에서는 NO_IMAGE로 종료될 가능성이 높고 크레딧이 차감될 수 있습니다. 그래도 실행할까요?");
+      if (!proceed) return setNotice("이미지 요청을 보내지 않았습니다. 이 지시는 텍스트 탭에서 실행하고, 완성된 이미지 묘사만 이미지 탭에 입력해주세요.");
+    }
     let customParameters: Record<string, unknown>;
     try {
       customParameters = JSON.parse(customJson);
@@ -554,6 +560,7 @@ export default function Home() {
 
             <Panel title="프롬프트" icon={<WandSparkles size={16} />} description="시스템 지시와 사용자 요청을 분리해 기록합니다.">
               <label className={labelClass}>{mode === "tts" ? "음성 지시문" : "시스템 프롬프트"}</label><Textarea value={mode === "image" ? imageSystemPrompt : mode === "tts" ? ttsInstructions : textSystemPrompt} onChange={(event) => mode === "image" ? setImageSystemPrompt(event.target.value) : mode === "tts" ? setTtsInstructions(event.target.value) : setTextSystemPrompt(event.target.value)} className="min-h-28" />
+              {imagePromptConflict && <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-800" role="alert"><b>NO_IMAGE 가능성이 높은 지시입니다.</b> 이미지 탭은 이미지 파일을 직접 생성합니다. “프롬프트만 출력”하는 작업은 텍스트 탭에서 실행한 뒤 결과를 이미지 설명으로 사용해주세요.</div>}
               <label className={`${labelClass} mt-4`}>{mode === "tts" ? "합성할 텍스트" : "사용자 프롬프트"}</label><Textarea value={mode === "image" ? imagePrompt : mode === "tts" ? ttsPrompt : textPrompt} onChange={(event) => mode === "image" ? setImagePrompt(event.target.value) : mode === "tts" ? setTtsPrompt(event.target.value) : setTextPrompt(event.target.value)} className="min-h-36" maxLength={mode === "tts" ? 8000 : undefined} />
               {mode === "tts" && <p className="mt-2 text-right text-[11px] text-slate-400">{ttsPrompt.length.toLocaleString("ko-KR")} / 8,000자 · 모델 한도 2,000 토큰</p>}
             </Panel>

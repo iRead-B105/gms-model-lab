@@ -109,12 +109,18 @@ export async function generateImage(request: GenerateRequest, signal?: AbortSign
       usage, images: savedImages, responseSummary,
     }, request.key);
   } catch (error) {
+    const finishReasons = Array.isArray(responseSummary?.finishReasons) ? responseSummary.finishReasons : [];
+    const noImage = finishReasons.includes("NO_IMAGE");
     return persist({
       id, createdAt, kind: "image", status: "error", provider: request.provider, model: request.model,
       systemPrompt: request.systemPrompt, userPrompt: request.userPrompt, finalPrompt,
       parameters: { ...sanitizeCustom(request.customParameters, IMAGE_PROTECTED_FIELDS), ...request.parameters },
       timings: { apiMs, imageReadyMs, saveMs, totalMs: Math.round(performance.now() - overallStarted) },
-      usage: {}, images: savedImages, responseSummary, error: safeError(error, [request.key]),
+      usage: {}, images: savedImages, responseSummary,
+      errorCode: noImage ? "NO_IMAGE" : undefined,
+      error: noImage
+        ? "Gemini가 이미지를 생성하지 않고 NO_IMAGE로 종료했습니다. 시스템 프롬프트가 ‘이미지 생성 프롬프트를 작성해 텍스트로 출력’하도록 요구하면 이미지 전용 응답과 충돌합니다. 이 경우 텍스트 탭에서 프롬프트를 먼저 만든 뒤, 완성된 이미지 묘사만 이미지 탭에 입력하세요. 안전 정책이나 서로 충돌하는 지시도 함께 확인해주세요."
+        : safeError(error, [request.key]),
     }, request.key);
   }
 }
