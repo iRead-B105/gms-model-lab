@@ -7,12 +7,52 @@ GMS에서 제공하는 이미지·텍스트·TTS 모델의 응답 속도, 토큰
 ### 준비 사항
 
 - Node.js 22.13 이상
-- pnpm
 - GMS Key
 
-### 실행
+먼저 Node.js와 npm이 설치되어 있는지 확인합니다.
 
-```powershell
+```bash
+node -v
+npm -v
+```
+
+`node: command not found`가 나오면 [Node.js 공식 사이트](https://nodejs.org/)에서 Node.js 22.13 이상을 설치한 뒤 터미널을 다시 엽니다.
+
+### pnpm 설치
+
+Corepack을 사용할 수 있다면 다음 방법을 권장합니다.
+
+```bash
+corepack enable
+corepack prepare pnpm@10 --activate
+pnpm -v
+```
+
+Windows에서 권한 오류가 발생하거나 `corepack` 명령이 없다면 npm으로 pnpm을 설치합니다.
+
+```bash
+npm install -g pnpm@10
+```
+
+Git Bash를 사용 중이라면 설치 후 명령어 경로를 새로 불러옵니다.
+
+```bash
+hash -r
+pnpm -v
+```
+
+전역 패키지를 설치할 권한이 없는 환경에서는 pnpm을 설치하지 않고 `npx`로 실행할 수 있습니다.
+
+```bash
+npx pnpm@10 install
+npx pnpm@10 dev
+```
+
+### 의존성 설치 및 실행
+
+프로젝트 폴더에서 아래 명령을 실행합니다. `pnpm install`은 처음 실행하거나 의존성이 변경되었을 때 필요합니다.
+
+```bash
 pnpm install
 pnpm dev
 ```
