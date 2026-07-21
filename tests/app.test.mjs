@@ -114,6 +114,9 @@ test("요청 크기·파라미터 범위·시간 초과를 제한한다", async 
   assert.match(validation, /getImageSizePresets/);
   assert.match(page, /이미지 비율/);
   assert.match(page, /출력 크기/);
+  assert.match(page, /출력 크기 · 모델 고정/);
+  assert.match(page, /key=\{`\$\{provider\}:\$\{modelId\}:\$\{effectiveAspectRatio\}`\}/);
+  assert.doesNotMatch(page, /disabled=\{imageSizePresets\.length === 1\}/);
   assert.match(imageGeneration, /name !== "aspectRatio"/);
 });
 

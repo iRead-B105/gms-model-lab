@@ -97,6 +97,7 @@ export default function Home() {
   const effectiveAspectRatio = imageAspectRatios.includes(aspectRatio as ImageAspectRatio) ? aspectRatio as ImageAspectRatio : imageAspectRatios[0];
   const imageSizePresets = getImageSizePresets(provider, modelId, effectiveAspectRatio);
   const effectiveSize = imageSizePresets.some((preset) => preset.value === size) ? size : imageSizePresets[0].value;
+  const canSelectImageSize = imageSizePresets.length > 1;
   const effectiveBackground = supportsFlexibleOpenAISizes(modelId) && background === "transparent" ? "auto" : background;
   const modeLogs = useMemo(() => logs.filter((run) => runKind(run) === mode), [logs, mode]);
   const benchmarkLogs = useMemo(() => modeLogs.filter((run) => run.provider === provider && run.model === modelId), [modeLogs, provider, modelId]);
@@ -331,8 +332,9 @@ export default function Home() {
 
   function changeImageAspectRatio(next: string) {
     const ratio = next as ImageAspectRatio;
+    const nextPresets = getImageSizePresets(provider, modelId, ratio);
     setAspectRatio(ratio);
-    setSize(getImageSizePresets(provider, modelId, ratio)[0].value);
+    setSize(nextPresets[0].value);
   }
 
   async function runImage(payload: Record<string, unknown>, signal: AbortSignal) {
@@ -631,7 +633,10 @@ export default function Home() {
                 <p className="rounded-lg bg-slate-50 px-3 py-2 text-[11px] leading-5 text-slate-500">{textDefaults.description}</p>
               </div> : <div className="grid min-w-0 grid-cols-1 gap-4">
                 <Field label="이미지 비율"><Select value={effectiveAspectRatio} onChange={(e) => changeImageAspectRatio(e.target.value)}>{imageAspectRatios.map((ratio) => <option key={ratio} value={ratio}>{IMAGE_ASPECT_RATIO_LABELS[ratio]}</option>)}</Select></Field>
-                <Field label="출력 크기"><Select value={effectiveSize} onChange={(e) => setSize(e.target.value)} disabled={imageSizePresets.length === 1}>{imageSizePresets.map((preset) => <option key={preset.value} value={preset.value}>{preset.label}</option>)}</Select></Field>
+                <Field label={canSelectImageSize ? "출력 크기" : "출력 크기 · 모델 고정"}>{canSelectImageSize
+                  ? <Select key={`${provider}:${modelId}:${effectiveAspectRatio}`} value={effectiveSize} onChange={(e) => setSize(e.target.value)}>{imageSizePresets.map((preset) => <option key={preset.value} value={preset.value}>{preset.label}</option>)}</Select>
+                  : <div className="flex h-10 w-full items-center rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm text-slate-600" role="status">{imageSizePresets[0].label}</div>}
+                </Field>
                 {provider === "openai" ? <>
                   <Field label="품질"><Select value={quality} onChange={(e) => setQuality(e.target.value)}><option value="auto">auto · 모델이 품질 선택</option><option>low</option><option>medium</option><option>high</option></Select></Field>
                   <Field label="배경"><Select value={effectiveBackground} onChange={(e) => setBackground(e.target.value)}><option value="auto">auto · 모델이 배경 처리 선택</option><option>opaque</option>{!supportsFlexibleOpenAISizes(modelId) && <option>transparent</option>}</Select></Field>
