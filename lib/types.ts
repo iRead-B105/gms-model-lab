@@ -19,6 +19,19 @@ export type Usage = {
   outputTokens?: number;
   totalTokens?: number;
   estimatedCredit?: number;
+  actualCredit?: number;
+};
+
+export type ContextImageInput = {
+  name: string;
+  mimeType: "image/png" | "image/jpeg" | "image/webp";
+  base64: string;
+  bytes: number;
+};
+
+export type StoredContextImage = Omit<ContextImageInput, "base64"> & {
+  filename: string;
+  url: string;
 };
 
 export type RunTimings = { apiMs: number; imageReadyMs: number; saveMs: number; totalMs: number };
@@ -36,6 +49,7 @@ export type RunLog = {
   parameters: Record<string, unknown>;
   timings: RunTimings;
   usage: Usage;
+  contextImages?: StoredContextImage[];
   images: Array<{ filename: string; mimeType: string; bytes: number; url: string }>;
   audio?: { filename: string; mimeType: string; bytes: number; url: string };
   outputText?: string;
@@ -54,6 +68,7 @@ export type GenerateRequest = {
   userPrompt: string;
   parameters: Record<string, unknown>;
   customParameters?: Record<string, unknown>;
+  contextImages?: ContextImageInput[];
 };
 
 export type TextGenerateRequest = {
@@ -70,6 +85,7 @@ export type TextGenerateRequest = {
     stopSequences?: string[];
   };
   customParameters?: Record<string, unknown>;
+  contextImages?: ContextImageInput[];
 };
 
 export type TtsGenerateRequest = {

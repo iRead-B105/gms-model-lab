@@ -11,12 +11,12 @@ export function formatDuration(value?: number) {
 
 export function formatCredit(value?: number) {
   return value === undefined
-    ? "단가 미등록"
+    ? "측정 안 됨"
     : value.toLocaleString("ko-KR", { maximumFractionDigits: 4 });
 }
 
 export function runCredit(run: RunLog) {
-  return run.usage.estimatedCredit;
+  return run.usage.actualCredit;
 }
 
 export function providerName(provider: Provider) {

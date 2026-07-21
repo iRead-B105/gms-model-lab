@@ -95,7 +95,9 @@ test("요청 크기·파라미터 범위·시간 초과를 제한한다", async 
     source("lib/server/gms/image-generation.ts"),
   ]);
 
-  assert.match(validation, /256 \* 1024/);
+  assert.match(validation, /18 \* 1024 \* 1024/);
+  assert.match(validation, /MAX_CONTEXT_IMAGES/);
+  assert.match(validation, /MAX_CONTEXT_IMAGE_BYTES/);
   assert.match(validation, /32_000/);
   assert.match(validation, /이미지 수.*1, 4/);
   assert.match(common, /AbortSignal\.timeout/);
@@ -195,13 +197,13 @@ test("자동 옵션의 실제 API 처리 방식을 표시하고 좁은 옵션 �
   assert.match(page, /선택 모델의 공급자 기본값을 사용/);
 });
 
-test("모델 테스트 지표는 성공 요청의 P50·P95와 단위당 비용을 계산한다", async () => {
+test("모델 테스트 지표는 성공 요청의 P50·P95와 실제 차감 단위 비용을 계산한다", async () => {
   const metrics = await import(new URL("../features/model-lab/metrics.ts", import.meta.url));
-  const success = (totalMs, apiMs, ttftMs, tokensPerSecond, estimatedCredit, imageCount = 0) => ({
+  const success = (totalMs, apiMs, ttftMs, tokensPerSecond, actualCredit, imageCount = 0) => ({
     status: "success",
     timings: { totalMs, apiMs },
     textMetrics: { ttftMs, tokensPerSecond },
-    usage: { outputTokens: tokensPerSecond, estimatedCredit },
+    usage: { outputTokens: tokensPerSecond, actualCredit },
     images: Array.from({ length: imageCount }, () => ({})),
   });
   const failed = { status: "error", timings: { totalMs: 999, apiMs: 999 }, usage: {}, images: [] };
@@ -216,14 +218,14 @@ test("모델 테스트 지표는 성공 요청의 P50·P95와 단위당 비용�
   assert.equal(text.ttft.p50, 30);
   assert.equal(text.tokenVelocity.p50, 20);
   assert.equal(text.successRate, 2 / 3 * 100);
-  assert.equal(text.estimatedCreditPerUnit, 1.5);
+  assert.equal(text.actualCreditPerUnit, 1.5);
 
   const image = metrics.calculateBenchmarkStats([
     success(100, 80, 0, 0, 1, 1),
     success(300, 200, 0, 0, 2, 2),
   ], "image");
   assert.equal(image.imageThroughput.p50, 500);
-  assert.equal(image.estimatedCreditPerUnit, 1);
+  assert.equal(image.actualCreditPerUnit, 1);
   assert.equal(image.generatedImages, 3);
 
   const tts = metrics.calculateBenchmarkStats([
@@ -235,15 +237,50 @@ test("모델 테스트 지표는 성공 요청의 P50·P95와 단위당 비용�
   assert.equal(tts.audioBytes.p50, 15_000);
 });
 
-test("로그·이미지·오디오를 원자적으로 저장하고 안전한 파일명만 허용한다", async () => {
+test("로그·출력·컨텍스트 이미지를 원자적으로 저장하고 안전한 파일명만 허용한다", async () => {
   const store = await source("lib/server/storage/run-store.ts");
   assert.match(store, /crypto\.randomUUID\(\).*\.tmp/);
   assert.match(store, /await rename\(temporary, filename\)/);
   assert.match(store, /RUN_ID\.test/);
   assert.match(store, /IMAGE_FILE\.test/);
   assert.match(store, /AUDIO_FILE\.test/);
+  assert.match(store, /CONTEXT_FILE\.test/);
   assert.match(store, /saveAudio/);
+  assert.match(store, /saveContextImage/);
+  assert.match(store, /updateRunActualCredit/);
   assert.match(store, /catch \{ return null; \}/);
+});
+
+test("공급자별 이미지 컨텍스트, 실제 크레딧, JSON·결과 다운로드를 지원한다", async () => {
+  const [imageGeneration, textGeneration, validation, page, results, route] = await Promise.all([
+    source("lib/server/gms/image-generation.ts"),
+    source("lib/server/gms/text-generation.ts"),
+    source("lib/server/validation.ts"),
+    source("app/page.tsx"),
+    source("features/model-lab/components/results.tsx"),
+    source("app/api/logs/[id]/route.ts"),
+  ]);
+
+  assert.match(imageGeneration, /images\/edits/);
+  assert.match(imageGeneration, /form\.append\("image\[\]"/);
+  assert.match(imageGeneration, /inlineData/);
+  assert.match(textGeneration, /input_image/);
+  assert.match(textGeneration, /media_type/);
+  assert.match(textGeneration, /inlineData/);
+  assert.match(textGeneration, /total_tokens/);
+  assert.match(textGeneration, /totalTokenCount/);
+  assert.match(imageGeneration, /total_tokens/);
+  assert.match(imageGeneration, /totalTokenCount/);
+  assert.match(validation, /contextImagesValue/);
+  assert.match(page, /ContextImagePicker/);
+  assert.match(page, /storeActualCredit/);
+  assert.match(page, /Input·Output·총 토큰 \/ GMS 차감/);
+  assert.match(page, /run\.usage\.totalTokens/);
+  assert.doesNotMatch(page, /최근 성공 12회/);
+  assert.match(results, /응답 결과 JSON/);
+  assert.match(results, /이미지 \{index \+ 1\} 다운로드/);
+  assert.match(route, /Content-Disposition/);
+  assert.match(route, /actualCredit/);
 });
 
 test("화면에서 중복 모델 ID를 공급자별로 구분하고 요청 취소를 지원한다", async () => {

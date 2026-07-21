@@ -2,6 +2,7 @@
 import type { RunLog, TextGenerateRequest } from "@/lib/types";
 import { calculateUsage, fetchWithTimeout, GMS_URLS, safeError, sanitizeCustom, TIMEOUTS, usageCount } from "@/lib/server/gms/common";
 import { saveRun } from "@/lib/server/storage/run-store";
+import { contextDataUrl, persistContextImages } from "@/lib/server/context-images";
 
 const MAX_SSE_FRAME_BYTES = 2 * 1024 * 1024;
 const MAX_OUTPUT_CHARACTERS = 2_000_000;
@@ -47,7 +48,13 @@ async function openUpstream(request: TextGenerateRequest, signal: AbortSignal) {
         ...safe,
         model: request.model,
         instructions: request.systemPrompt || undefined,
-        input: request.userPrompt,
+        input: request.contextImages?.length ? [{
+          role: "user",
+          content: [
+            ...request.contextImages.map((image) => ({ type: "input_image", image_url: contextDataUrl(image) })),
+            { type: "input_text", text: request.userPrompt },
+          ],
+        }] : request.userPrompt,
         ...(maxTokens !== undefined ? { max_output_tokens: maxTokens } : {}),
         ...(!reasoningEffort && temperature !== undefined ? { temperature } : {}),
         ...(!reasoningEffort && topP !== undefined ? { top_p: topP } : {}),
@@ -64,7 +71,13 @@ async function openUpstream(request: TextGenerateRequest, signal: AbortSignal) {
         ...safe,
         model: request.model,
         system: request.systemPrompt || undefined,
-        messages: [{ role: "user", content: request.userPrompt }],
+        messages: [{
+          role: "user",
+          content: request.contextImages?.length ? [
+            ...request.contextImages.map((image) => ({ type: "image", source: { type: "base64", media_type: image.mimeType, data: image.base64 } })),
+            { type: "text", text: request.userPrompt },
+          ] : request.userPrompt,
+        }],
         max_tokens: maxTokens ?? 1024,
         ...(temperature !== undefined ? { temperature } : {}),
         ...(topP !== undefined ? { top_p: topP } : {}),
@@ -85,7 +98,7 @@ async function openUpstream(request: TextGenerateRequest, signal: AbortSignal) {
     body: JSON.stringify({
       ...safe,
       ...(request.systemPrompt ? { systemInstruction: { parts: [{ text: request.systemPrompt }] } } : {}),
-      contents: [{ role: "user", parts: [{ text: request.userPrompt }] }],
+      contents: [{ role: "user", parts: [...(request.contextImages || []).map((image) => ({ inlineData: { mimeType: image.mimeType, data: image.base64 } })), { text: request.userPrompt }] }],
       ...(Object.keys(generationConfig).length ? { generationConfig } : {}),
     }),
   }, TIMEOUTS.textGeneration);
@@ -95,20 +108,20 @@ function extractChunk(provider: TextGenerateRequest["provider"], event: Record<s
   if (event.type === "error" || event.type === "response.failed" || event.error) throw new Error(typeof event.error?.message === "string" ? event.error.message : "공급자 스트림에서 오류가 발생했습니다.");
   if (provider === "openai") return {
     delta: event.type === "response.output_text.delta" ? String(event.delta || "") : "",
-    inputTokens: usageCount(event.response?.usage?.input_tokens), outputTokens: usageCount(event.response?.usage?.output_tokens),
-    summary: event.type === "response.completed" ? { responseId: event.response?.id, status: event.response?.status } : undefined,
+    inputTokens: usageCount(event.response?.usage?.input_tokens), outputTokens: usageCount(event.response?.usage?.output_tokens), totalTokens: usageCount(event.response?.usage?.total_tokens),
+    summary: event.type === "response.completed" ? { responseId: event.response?.id, status: event.response?.status, usage: event.response?.usage || null, incompleteDetails: event.response?.incomplete_details || null } : undefined,
   };
   if (provider === "anthropic") return {
     delta: event.type === "content_block_delta" && event.delta?.type === "text_delta" ? String(event.delta.text || "") : "",
-    inputTokens: usageCount(event.message?.usage?.input_tokens), outputTokens: usageCount(event.usage?.output_tokens),
-    summary: event.type === "message_delta" ? { stopReason: event.delta?.stop_reason || null } : undefined,
+    inputTokens: usageCount(event.message?.usage?.input_tokens), outputTokens: usageCount(event.usage?.output_tokens), totalTokens: undefined,
+    summary: event.type === "message_delta" ? { stopReason: event.delta?.stop_reason || null, stopSequence: event.delta?.stop_sequence || null, usage: event.usage || null } : undefined,
   };
   const candidates = Array.isArray(event.candidates) ? event.candidates : [];
   const parts = candidates.flatMap((candidate: any) => candidate.content?.parts || []);
   const meta = event.usageMetadata || {};
   return {
     delta: parts.filter((part: any) => typeof part.text === "string").map((part: any) => part.text).join(""),
-    inputTokens: usageCount(meta.promptTokenCount), outputTokens: usageCount(meta.candidatesTokenCount),
+    inputTokens: usageCount(meta.promptTokenCount), outputTokens: usageCount(meta.candidatesTokenCount), totalTokens: usageCount(meta.totalTokenCount),
     summary: candidates.length ? { finishReasons: candidates.map((candidate: any) => candidate.finishReason).filter(Boolean) } : undefined,
   };
 }
@@ -139,14 +152,21 @@ export function createTextStream(request: TextGenerateRequest, requestSignal?: A
       let ttftMs = 0;
       let inputTokens: number | undefined;
       let outputTokens: number | undefined;
+      let totalTokens: number | undefined;
       let responseSummary: Record<string, unknown> | undefined;
+      let contextImages: NonNullable<RunLog["contextImages"]> = [];
+      let saveMs = 0;
       try {
+        const contextSaveStarted = performance.now();
+        contextImages = await persistContextImages(id, request.contextImages);
+        saveMs = Math.round(performance.now() - contextSaveStarted);
         const upstream = await openUpstream(request, signal);
         await ensureOk(upstream);
         for await (const event of readSse(upstream)) {
           const chunk = extractChunk(request.provider, event);
           if (chunk.inputTokens !== undefined) inputTokens = chunk.inputTokens;
           if (chunk.outputTokens !== undefined) outputTokens = chunk.outputTokens;
+          if (chunk.totalTokens !== undefined) totalTokens = chunk.totalTokens;
           if (chunk.summary) responseSummary = chunk.summary;
           if (chunk.delta) {
             if (!ttftMs) ttftMs = Math.round(performance.now() - started);
@@ -162,8 +182,8 @@ export function createTextStream(request: TextGenerateRequest, requestSignal?: A
           id, createdAt, kind: "text", status: "success", provider: request.provider, model: request.model,
           systemPrompt: request.systemPrompt, userPrompt: request.userPrompt, finalPrompt: request.userPrompt,
           parameters: { ...sanitizeCustom(request.customParameters, PROTECTED_FIELDS), ...request.parameters },
-          timings: { apiMs: totalMs, imageReadyMs: 0, saveMs: 0, totalMs },
-          usage: calculateUsage("text", request.model, inputTokens, outputTokens), images: [], outputText,
+          timings: { apiMs: Math.max(0, totalMs - saveMs), imageReadyMs: 0, saveMs, totalMs },
+          usage: calculateUsage("text", request.model, inputTokens, outputTokens, totalTokens), images: [], contextImages, outputText,
           textMetrics: { ttftMs, tokensPerSecond: outputTokens ? outputTokens / generationSeconds : undefined, characterCount: outputText.length }, responseSummary,
         }, request.key);
         send(controller, run.status === "success" ? "done" : "error", run);
@@ -173,8 +193,8 @@ export function createTextStream(request: TextGenerateRequest, requestSignal?: A
           id, createdAt, kind: "text", status: "error", provider: request.provider, model: request.model,
           systemPrompt: request.systemPrompt, userPrompt: request.userPrompt, finalPrompt: request.userPrompt,
           parameters: { ...sanitizeCustom(request.customParameters, PROTECTED_FIELDS), ...request.parameters },
-          timings: { apiMs: totalMs, imageReadyMs: 0, saveMs: 0, totalMs },
-          usage: calculateUsage("text", request.model, inputTokens, outputTokens), images: [], outputText,
+          timings: { apiMs: Math.max(0, totalMs - saveMs), imageReadyMs: 0, saveMs, totalMs },
+          usage: calculateUsage("text", request.model, inputTokens, outputTokens, totalTokens), images: [], contextImages, outputText,
           textMetrics: { ttftMs, characterCount: outputText.length }, responseSummary, error: safeError(error, [request.key]),
         }, request.key);
         send(controller, "error", run);

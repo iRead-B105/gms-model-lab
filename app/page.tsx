@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Select } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { TTS_RESPONSE_FORMATS, TTS_VOICES, type ModelInfo, type Provider, type RunLog, type TestKind, type TtsResponseFormat, type TtsVoice } from "@/lib/types";
+import { TTS_RESPONSE_FORMATS, TTS_VOICES, type ContextImageInput, type ModelInfo, type Provider, type RunLog, type TestKind, type TtsResponseFormat, type TtsVoice } from "@/lib/types";
 import { KNOWN_IMAGE_MODELS, KNOWN_TEXT_MODELS, KNOWN_TTS_MODELS } from "@/lib/model-catalog";
 import { findAspectRatioForSize, getImageAspectRatios, getImageSizePresets, IMAGE_ASPECT_RATIO_LABELS, supportsFlexibleOpenAISizes, type ImageAspectRatio } from "@/lib/image-sizing";
 import { getImageParameterDefaults, getTextParameterDefaults, TTS_PARAMETER_DEFAULTS } from "@/lib/model-defaults";
@@ -20,12 +20,14 @@ import { Field, labelClass, Metric, ModeButton, Panel } from "@/features/model-l
 import { ModelSelector } from "@/features/model-lab/components/model-selector";
 import { DefaultableNumber, DefaultableRange, type OptionalNumber } from "@/features/model-lab/components/parameter-control";
 import { RequestValueSummary, type RequestValueRow } from "@/features/model-lab/components/request-value-summary";
+import { ContextImagePicker } from "@/features/model-lab/components/context-image-picker";
 import { ImageResult, LatencyChart, TextResult, TtsResult } from "@/features/model-lab/components/results";
 import { calculateBenchmarkStats, formatRate } from "@/features/model-lab/metrics";
 import { csvCell, formatCredit as credit, formatDuration as ms, providerName, readJsonResponse, runCredit, runKind } from "@/features/model-lab/utils";
 import { readStoredGmsKey, removeStoredGmsKey, saveStoredGmsKey } from "@/features/model-lab/key-storage";
 
 type CreditInfo = { totalCredit: number; usedCredit: number; remainCredit: number; expiredDate: string };
+const creditDelta = (before: CreditInfo, after: CreditInfo) => Math.max(0, before.remainCredit - after.remainCredit, after.usedCredit - before.usedCredit);
 const imagePromptDefault = "A cinematic product photo of a translucent smart speaker on a brushed steel desk, soft morning light, realistic reflections, editorial photography, ultra detailed.";
 const textPromptDefault = "실무에서 생성형 AI 모델의 응답 지연시간을 비교할 때 확인해야 할 핵심 지표를 5가지로 정리해줘.";
 const ttsPromptDefault = "안녕하세요. GMS 음성 합성 모델의 응답 속도와 음질을 테스트하고 있습니다.";
@@ -82,6 +84,7 @@ export default function Home() {
   const [lastBatchCredit, setLastBatchCredit] = useState<number | null>(null);
   const [checkingKey, setCheckingKey] = useState(false);
   const [hasStoredKey, setHasStoredKey] = useState(false);
+  const [contextImages, setContextImages] = useState<ContextImageInput[]>([]);
   const runAbortRef = useRef<AbortController | null>(null);
 
   const models = mode === "image" ? imageModels : mode === "tts" ? ttsModels : textModels;
@@ -206,6 +209,27 @@ export default function Home() {
     if (!response.ok) throw new Error(body.error || "키 확인 실패");
     setCreditInfo(body);
     return body as CreditInfo;
+  }
+
+  async function storeActualCredit(run: RunLog, actualCredit: number) {
+    const response = await fetch(`/api/logs/${encodeURIComponent(run.id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ actualCredit }),
+    });
+    const body = await readJsonResponse<RunLog & { error?: string }>(response);
+    if (!response.ok) throw new Error(body.error || "실제 차감 크레딧을 저장하지 못했습니다.");
+    return body;
+  }
+
+  async function fetchSettledCredit(before: CreditInfo) {
+    let after = await fetchCredit();
+    for (const waitMs of [300, 700]) {
+      if (creditDelta(before, after) > 0) break;
+      await new Promise((resolve) => window.setTimeout(resolve, waitMs));
+      after = await fetchCredit();
+    }
+    return after;
   }
 
   async function checkKey() {
@@ -385,7 +409,7 @@ export default function Home() {
     const requestMode = mode;
     const requestProvider = provider;
     const requestPayload = requestMode === "image"
-      ? { key, provider: requestProvider, model: modelId, systemPrompt: imageSystemPrompt, userPrompt: imagePrompt, parameters: imageParameters(), customParameters }
+      ? { key, provider: requestProvider, model: modelId, systemPrompt: imageSystemPrompt, userPrompt: imagePrompt, parameters: imageParameters(), customParameters, contextImages }
       : requestMode === "text" ? {
         key,
         provider: requestProvider,
@@ -400,6 +424,7 @@ export default function Home() {
           stopSequences: requestProvider === "openai" ? undefined : stopSequences.split("\n").map((value) => value.trim()).filter(Boolean),
         },
         customParameters,
+        contextImages,
       } : {
         key,
         provider: "openai",
@@ -412,10 +437,8 @@ export default function Home() {
     const controller = new AbortController();
     runAbortRef.current = controller;
     setRunning(true); setNotice(""); setLiveOutput(""); setLastBatchCredit(null); setProgress({ done: 0, total: repeat });
-    let beforeCredit = creditInfo?.remainCredit;
-    if (beforeCredit === undefined) {
-      try { beforeCredit = (await fetchCredit()).remainCredit; } catch { /* Token metrics can still be collected. */ }
-    }
+    let beforeCredit: CreditInfo | undefined;
+    try { beforeCredit = await fetchCredit(); } catch { /* Generation can continue without balance measurement. */ }
     let cursor = 0;
     const results: RunLog[] = [];
     const worker = async () => {
@@ -428,7 +451,16 @@ export default function Home() {
             : requestMode === "text"
               ? await runText(requestPayload, index === 0, controller.signal)
               : await runTts(requestPayload, controller.signal);
-          results.push(result);
+          let measuredResult = result;
+          if (concurrency === 1 && beforeCredit !== undefined && !controller.signal.aborted) {
+            try {
+              const after = await fetchSettledCredit(beforeCredit);
+              const actualCredit = creditDelta(beforeCredit, after);
+              beforeCredit = after;
+              measuredResult = await storeActualCredit(result, actualCredit);
+            } catch { /* Keep the generation result when credit measurement fails. */ }
+          }
+          results.push(measuredResult);
         } catch (error) {
           if (!controller.signal.aborted) setNotice(error instanceof Error ? error.message : "생성 요청 실패");
         }
@@ -440,14 +472,16 @@ export default function Home() {
       await loadLogs();
       const latest = results.find((run) => run.status === "success") || results[0];
       if (latest) setSelectedId(latest.id);
-      let consumed: number | null = null;
-      if (!controller.signal.aborted) {
+      let consumed: number | null = concurrency === 1 && results.some((run) => typeof run.usage.actualCredit === "number")
+        ? results.reduce((sum, run) => sum + (run.usage.actualCredit || 0), 0)
+        : null;
+      if (!controller.signal.aborted && concurrency > 1) {
         try {
-          const after = await fetchCredit();
-          if (beforeCredit !== undefined) consumed = Math.max(0, beforeCredit - after.remainCredit);
-          setLastBatchCredit(consumed);
+          const after = beforeCredit ? await fetchSettledCredit(beforeCredit) : await fetchCredit();
+          if (beforeCredit !== undefined) consumed = creditDelta(beforeCredit, after);
         } catch { /* Generation result remains valid when balance refresh fails. */ }
       }
+      setLastBatchCredit(consumed);
       const successes = results.filter((run) => run.status === "success").length;
       setNotice(controller.signal.aborted
         ? `테스트를 취소했습니다. 완료된 요청 ${results.length}개는 기록에 남아 있습니다.`
@@ -495,6 +529,21 @@ export default function Home() {
       setTtsResponseFormat(TTS_RESPONSE_FORMATS.includes(run.parameters.responseFormat as TtsResponseFormat) ? run.parameters.responseFormat as TtsResponseFormat : TTS_PARAMETER_DEFAULTS.responseFormat);
       setTtsSpeed(typeof run.parameters.speed === "number" ? run.parameters.speed : TTS_PARAMETER_DEFAULTS.speed);
     }
+    setContextImages([]);
+    if (run.contextImages?.length) {
+      void Promise.all(run.contextImages.map(async (image) => {
+        const response = await fetch(image.url);
+        if (!response.ok) throw new Error();
+        const blob = await response.blob();
+        const base64 = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onerror = () => reject(new Error());
+          reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
+          reader.readAsDataURL(blob);
+        });
+        return { name: image.name, mimeType: image.mimeType, bytes: image.bytes, base64 } as ContextImageInput;
+      })).then(setContextImages).catch(() => setNotice("저장된 컨텍스트 이미지 일부를 다시 불러오지 못했습니다."));
+    }
     setCustomJson("{}"); window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
@@ -513,8 +562,8 @@ export default function Home() {
 
   function exportLogs(format: "json" | "csv") {
     const data = format === "json" ? JSON.stringify(filteredLogs, null, 2) : [
-      "id,kind,createdAt,status,provider,model,totalMs,apiMs,ttftMs,tokensPerSecond,imageCount,imagesPerMinute,speechTtfbMs,charactersPerSecond,audioBytes,inputTokens,outputTokens,estimatedCredit,prompt",
-      ...filteredLogs.map((run) => [run.id, runKind(run), run.createdAt, run.status, run.provider, run.model, run.timings.totalMs, run.timings.apiMs, run.textMetrics?.ttftMs ?? "", run.textMetrics?.tokensPerSecond ?? "", run.images.length, run.images.length && run.timings.totalMs > 0 ? run.images.length * 60_000 / run.timings.totalMs : "", run.speechMetrics?.timeToFirstByteMs ?? "", run.speechMetrics?.charactersPerSecond ?? "", run.audio?.bytes ?? "", run.usage.inputTokens ?? "", run.usage.outputTokens ?? "", run.usage.estimatedCredit ?? "", run.userPrompt].map(csvCell).join(",")),
+      "id,kind,createdAt,status,provider,model,totalMs,apiMs,ttftMs,tokensPerSecond,imageCount,imagesPerMinute,speechTtfbMs,charactersPerSecond,audioBytes,inputTokens,outputTokens,totalTokens,actualGmsCredit,estimatedCredit,prompt",
+      ...filteredLogs.map((run) => [run.id, runKind(run), run.createdAt, run.status, run.provider, run.model, run.timings.totalMs, run.timings.apiMs, run.textMetrics?.ttftMs ?? "", run.textMetrics?.tokensPerSecond ?? "", run.images.length, run.images.length && run.timings.totalMs > 0 ? run.images.length * 60_000 / run.timings.totalMs : "", run.speechMetrics?.timeToFirstByteMs ?? "", run.speechMetrics?.charactersPerSecond ?? "", run.audio?.bytes ?? "", run.usage.inputTokens ?? "", run.usage.outputTokens ?? "", run.usage.totalTokens ?? "", run.usage.actualCredit ?? "", run.usage.estimatedCredit ?? "", run.userPrompt].map(csvCell).join(",")),
     ].join("\n");
     const url = URL.createObjectURL(new Blob([format === "csv" ? `\uFEFF${data}` : data], { type: format === "json" ? "application/json" : "text/csv;charset=utf-8" }));
     const anchor = document.createElement("a"); anchor.href = url; anchor.download = `gms-model-lab-${mode}-${new Date().toISOString().slice(0, 10)}.${format}`; anchor.click(); URL.revokeObjectURL(url);
@@ -540,7 +589,7 @@ export default function Home() {
           <Metric icon={<Activity size={16} />} label={mode === "text" ? "첫 토큰 P50" : mode === "tts" ? "첫 바이트 P50" : "API 생성 P50"} value={ms(mode === "text" ? stats.ttft.p50 : mode === "tts" ? stats.speechTtfb.p50 : stats.apiLatency.p50)} sub={`P95 ${ms(mode === "text" ? stats.ttft.p95 : mode === "tts" ? stats.speechTtfb.p95 : stats.apiLatency.p95)}`} />
           <Metric icon={<BarChart3 size={16} />} label={mode === "text" ? "생성 속도 P50" : mode === "tts" ? "입력 처리량 P50" : "이미지 처리량 P50"} value={formatRate(mode === "text" ? stats.tokenVelocity.p50 : mode === "tts" ? stats.characterThroughput.p50 : stats.imageThroughput.p50, mode === "text" ? "tok/s" : mode === "tts" ? "자/초" : "장/분")} sub={mode === "text" ? `출력 P50 ${stats.outputTokens.p50 === undefined ? "—" : Math.round(stats.outputTokens.p50).toLocaleString("ko-KR")} tok` : mode === "tts" ? `오디오 P50 ${stats.audioBytes.p50 === undefined ? "—" : `${(stats.audioBytes.p50 / 1024).toFixed(1)} KB`}` : `생성 ${stats.generatedImages}장`} />
           <Metric icon={<Check size={16} />} label="성공률" value={stats.attempts ? `${stats.successRate.toFixed(1)}%` : "—"} sub={`${stats.successes}/${stats.attempts}회 성공`} />
-          <Metric icon={<WalletCards size={16} />} label={mode === "image" ? "크레딧/이미지" : mode === "tts" ? "크레딧/음성" : "크레딧/응답"} value={credit(stats.estimatedCreditPerUnit)} sub={lastBatchCredit !== null ? `최근 실제 차감 ${credit(lastBatchCredit)}` : `단가 확인 ${stats.estimatedCreditSamples}건`} />
+          <Metric icon={<WalletCards size={16} />} label={mode === "image" ? "실제 크레딧/이미지" : mode === "tts" ? "실제 크레딧/음성" : "실제 크레딧/응답"} value={credit(stats.actualCreditPerUnit)} sub={lastBatchCredit !== null ? `최근 배치 차감 ${credit(lastBatchCredit)}` : `실측 ${stats.actualCreditSamples}건`} />
         </section>
         <p className="mb-6 text-right text-[11px] leading-5 text-slate-400">선택한 모델의 기록만 집계합니다. P50은 일반적인 체감값, P95는 느린 구간입니다. P95는 최소 20회, 안정적인 비교는 100회 이상을 권장합니다.</p>
 
@@ -563,6 +612,7 @@ export default function Home() {
               {imagePromptConflict && <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-800" role="alert"><b>NO_IMAGE 가능성이 높은 지시입니다.</b> 이미지 탭은 이미지 파일을 직접 생성합니다. “프롬프트만 출력”하는 작업은 텍스트 탭에서 실행한 뒤 결과를 이미지 설명으로 사용해주세요.</div>}
               <label className={`${labelClass} mt-4`}>{mode === "tts" ? "합성할 텍스트" : "사용자 프롬프트"}</label><Textarea value={mode === "image" ? imagePrompt : mode === "tts" ? ttsPrompt : textPrompt} onChange={(event) => mode === "image" ? setImagePrompt(event.target.value) : mode === "tts" ? setTtsPrompt(event.target.value) : setTextPrompt(event.target.value)} className="min-h-36" maxLength={mode === "tts" ? 8000 : undefined} />
               {mode === "tts" && <p className="mt-2 text-right text-[11px] text-slate-400">{ttsPrompt.length.toLocaleString("ko-KR")} / 8,000자 · 모델 한도 2,000 토큰</p>}
+              {mode !== "tts" && <ContextImagePicker images={contextImages} disabled={running} onChange={setContextImages} onError={setNotice} />}
             </Panel>
 
             <Panel title="생성 파라미터" icon={mode === "image" ? <ImageIcon size={16} /> : mode === "tts" ? <Volume2 size={16} /> : <Code2 size={16} />} description={`${providerName(provider)} ${mode === "image" ? "이미지" : mode === "tts" ? "음성 합성" : "스트리밍 텍스트"} 옵션`}>
@@ -603,6 +653,7 @@ export default function Home() {
 
             <Panel title="테스트 실행" icon={<Play size={16} />}>
               <div className="grid grid-cols-2 gap-3"><Field label="반복 횟수"><Input type="number" min="1" max="10" value={repeat} onChange={(e) => setRepeat(Math.min(10, Math.max(1, Number(e.target.value))))} /></Field><Field label="동시 요청"><Input type="number" min="1" max="4" value={concurrency} onChange={(e) => setConcurrency(Math.min(4, Math.max(1, Number(e.target.value))))} /></Field></div>
+              <p className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-[11px] leading-5 text-slate-500">실행별 실제 GMS 차감량은 동시 요청 1개일 때 잔액 차이로 저장합니다. 병렬 실행은 요청별 비용을 정확히 나눌 수 없어 배치 전체 차감량만 표시합니다.</p>
               <Button size="lg" className="mt-4 w-full" onClick={runTests} disabled={running}>{running ? <><LoaderCircle className="animate-spin" size={17} /> 생성 중 {progress.done}/{progress.total}</> : <><Sparkles size={17} /> {mode === "image" ? "이미지" : mode === "tts" ? "TTS" : "텍스트"} 테스트 시작</>}</Button>
               {running && <Button variant="outline" className="mt-2 w-full" onClick={cancelTests}><Square size={14} /> 요청 취소</Button>}
               {running && <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-slate-950 transition-all" style={{ width: `${(progress.done / progress.total) * 100}%` }} /></div>}
@@ -614,7 +665,7 @@ export default function Home() {
             <Panel title={mode === "image" ? "결과 미리보기" : mode === "tts" ? "음성 재생" : "스트리밍 응답"} icon={mode === "image" ? <ImageIcon size={16} /> : mode === "tts" ? <Volume2 size={16} /> : <FileText size={16} />} description={running && mode === "text" ? "첫 번째 요청을 실시간으로 표시 중" : selected ? `${selected.model} · ${new Date(selected.createdAt).toLocaleString("ko-KR")}` : "테스트를 실행하면 결과가 표시됩니다."} action={selected && <Button variant="outline" size="sm" onClick={() => reuseRun(selected)}><Copy size={13} /> 설정 불러오기</Button>}>
               {mode === "text" ? <TextResult run={running ? null : selected} liveOutput={running ? liveOutput : ""} /> : mode === "tts" ? <TtsResult run={selected} /> : <ImageResult run={selected} />}
             </Panel>
-            <Panel title="최근 지연시간" icon={<BarChart3 size={16} />} description={`${modelId} 최근 성공 12회 · ${mode === "text" ? "전체 시간과 TTFT" : mode === "tts" ? "전체 시간과 첫 바이트" : "전체 시간과 API 생성"}`}>
+            <Panel title="최근 지연시간" icon={<BarChart3 size={16} />} description={`${modelId} 최근 성공 ${Math.min(12, benchmarkLogs.filter((run) => run.status === "success").length)}회 · ${mode === "text" ? "전체 시간과 TTFT" : mode === "tts" ? "전체 시간과 첫 바이트" : "전체 시간과 API 생성"}`}>
               <LatencyChart logs={benchmarkLogs} selectedId={selectedId} onSelect={setSelectedId} kind={mode} />
             </Panel>
           </div>
@@ -622,7 +673,7 @@ export default function Home() {
 
         <section className="mt-5"><Panel title="로컬 테스트 기록" icon={<History size={16} />} description={`${mode === "image" ? "이미지" : mode === "tts" ? "TTS" : "텍스트"} ${modeLogs.length}개 · 전체 ${logs.length}개 기록`} action={<div className="flex gap-2"><Button variant="outline" size="sm" onClick={() => exportLogs("csv")}><Download size={13} /> CSV</Button><Button variant="outline" size="sm" onClick={() => exportLogs("json")}>JSON</Button></div>}>
           <div className="mb-4 flex flex-col gap-2 sm:flex-row"><div className="relative flex-1"><Search className="absolute left-3 top-2.5 text-slate-400" size={16} /><Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="모델, 프롬프트 또는 응답 검색" className="pl-9" /></div><Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="sm:w-36"><option value="all">모든 상태</option><option value="success">성공</option><option value="error">실패</option></Select></div>
-          <div className="overflow-x-auto"><table className="w-full min-w-[940px] text-left text-sm"><thead><tr className="border-y border-slate-100 text-[11px] uppercase tracking-wider text-slate-400"><th className="px-3 py-3 font-semibold">상태 / 시간</th><th className="px-3 py-3 font-semibold">모델</th><th className="px-3 py-3 font-semibold">프롬프트</th><th className="px-3 py-3 font-semibold">{mode === "text" ? "전체 / TTFT" : mode === "tts" ? "전체 / 첫 바이트" : "전체 / API"}</th><th className="px-3 py-3 font-semibold">{mode === "tts" ? "오디오 / 처리량" : "토큰 / 크레딧"}</th><th className="px-3 py-3 font-semibold text-right">작업</th></tr></thead><tbody>{filteredLogs.map((run) => <tr key={run.id} onClick={() => setSelectedId(run.id)} className={`cursor-pointer border-b border-slate-100 hover:bg-slate-50 ${selected?.id === run.id ? "bg-slate-50" : ""}`}><td className="px-3 py-3"><span className={`inline-flex items-center gap-1.5 text-xs font-semibold ${run.status === "success" ? "text-emerald-700" : "text-red-600"}`}>{run.status === "success" ? <Check size={13} /> : <XCircle size={13} />}{run.status === "success" ? "성공" : "실패"}</span><p className="mt-1 text-[11px] text-slate-400">{new Date(run.createdAt).toLocaleString("ko-KR")}</p></td><td className="px-3 py-3"><p className="font-medium">{run.model}</p><p className="mt-1 text-xs text-slate-400">{providerName(run.provider)}</p></td><td className="max-w-sm px-3 py-3"><p className="truncate text-slate-600">{run.userPrompt}</p></td><td className="px-3 py-3 font-mono text-xs"><b>{ms(run.timings.totalMs)}</b><span className="mx-1 text-slate-300">/</span><span className="text-slate-500">{mode === "text" ? ms(run.textMetrics?.ttftMs) : mode === "tts" ? ms(run.speechMetrics?.timeToFirstByteMs) : ms(run.timings.apiMs)}</span></td><td className="px-3 py-3 font-mono text-xs">{mode === "tts" ? <><p>{run.audio ? `${(run.audio.bytes / 1024).toFixed(1)} KB` : "—"}</p><p className="mt-1 text-slate-400">{formatRate(run.speechMetrics?.charactersPerSecond, "자/초")}</p></> : <><p>{run.usage.inputTokens ?? "—"} / {run.usage.outputTokens ?? "—"}</p><p className="mt-1 text-slate-400">{credit(runCredit(run))}</p></>}</td><td className="px-3 py-3"><div className="flex justify-end gap-1"><Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); reuseRun(run); }}><RefreshCcw size={13} /> 재사용</Button><Button variant="ghost" size="sm" className="text-red-500" onClick={(e) => { e.stopPropagation(); void removeRun(run); }} aria-label="기록 삭제"><Trash2 size={14} /></Button></div></td></tr>)}{!filteredLogs.length && <tr><td colSpan={6} className="py-12 text-center text-sm text-slate-400">조건에 맞는 테스트 기록이 없습니다.</td></tr>}</tbody></table></div>
+          <div className="overflow-x-auto"><table className="w-full min-w-[1020px] text-left text-sm"><thead><tr className="border-y border-slate-100 text-[11px] uppercase tracking-wider text-slate-400"><th className="px-3 py-3 font-semibold">상태 / 시간</th><th className="px-3 py-3 font-semibold">모델</th><th className="px-3 py-3 font-semibold">프롬프트</th><th className="px-3 py-3 font-semibold">{mode === "text" ? "전체 / TTFT" : mode === "tts" ? "전체 / 첫 바이트" : "전체 / API"}</th><th className="px-3 py-3 font-semibold">{mode === "tts" ? "오디오 / GMS 차감" : "Input·Output·총 토큰 / GMS 차감"}</th><th className="px-3 py-3 font-semibold text-right">작업</th></tr></thead><tbody>{filteredLogs.map((run) => <tr key={run.id} onClick={() => setSelectedId(run.id)} className={`cursor-pointer border-b border-slate-100 hover:bg-slate-50 ${selected?.id === run.id ? "bg-slate-50" : ""}`}><td className="px-3 py-3"><span className={`inline-flex items-center gap-1.5 text-xs font-semibold ${run.status === "success" ? "text-emerald-700" : "text-red-600"}`}>{run.status === "success" ? <Check size={13} /> : <XCircle size={13} />}{run.status === "success" ? "성공" : "실패"}</span><p className="mt-1 text-[11px] text-slate-400">{new Date(run.createdAt).toLocaleString("ko-KR")}</p></td><td className="px-3 py-3"><p className="font-medium">{run.model}</p><p className="mt-1 text-xs text-slate-400">{providerName(run.provider)}</p></td><td className="max-w-sm px-3 py-3"><p className="truncate text-slate-600">{run.userPrompt}</p></td><td className="px-3 py-3 font-mono text-xs"><b>{ms(run.timings.totalMs)}</b><span className="mx-1 text-slate-300">/</span><span className="text-slate-500">{mode === "text" ? ms(run.textMetrics?.ttftMs) : mode === "tts" ? ms(run.speechMetrics?.timeToFirstByteMs) : ms(run.timings.apiMs)}</span></td><td className="whitespace-nowrap px-3 py-3 font-mono text-xs">{mode === "tts" ? <><p>{run.audio ? `${(run.audio.bytes / 1024).toFixed(1)} KB` : "—"}</p><p className="mt-1 text-slate-400">GMS {credit(runCredit(run))}</p></> : <><p><span className="text-slate-400">I</span> {run.usage.inputTokens ?? "—"} <span className="text-slate-300">·</span> <span className="text-slate-400">O</span> {run.usage.outputTokens ?? "—"} <span className="text-slate-300">·</span> <span className="text-slate-400">총</span> {run.usage.totalTokens ?? "—"}</p><p className="mt-1 text-slate-400">GMS {credit(runCredit(run))}</p></>}</td><td className="px-3 py-3"><div className="flex justify-end gap-1"><Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); reuseRun(run); }}><RefreshCcw size={13} /> 재사용</Button><Button variant="ghost" size="sm" className="text-red-500" onClick={(e) => { e.stopPropagation(); void removeRun(run); }} aria-label="기록 삭제"><Trash2 size={14} /></Button></div></td></tr>)}{!filteredLogs.length && <tr><td colSpan={6} className="py-12 text-center text-sm text-slate-400">조건에 맞는 테스트 기록이 없습니다.</td></tr>}</tbody></table></div>
         </Panel></section>
         <footer className="py-8 text-center text-xs text-slate-400">GMS Model Lab · GMS 키는 사용자가 선택한 경우에만 브라우저에 저장되며 서버 로그에는 남기지 않습니다.</footer>
       </div>

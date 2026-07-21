@@ -1,5 +1,5 @@
 import Image from "next/image";
-import { Download, FileText, ImageIcon, LoaderCircle, Volume2, XCircle } from "lucide-react";
+import { Braces, Download, FileText, ImageIcon, LoaderCircle, Volume2, XCircle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import type { RunLog, TestKind } from "@/lib/types";
 import { formatRate } from "@/features/model-lab/metrics";
@@ -14,21 +14,21 @@ export function ImageResult({ run }: { run: RunLog | null }) {
   const image = run.images[0];
   const imagesPerMinute = run.images.length && run.timings.totalMs > 0 ? run.images.length * 60_000 / run.timings.totalMs : undefined;
 
-  return <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_250px]"><div className="preview-grid relative grid min-h-[430px] place-items-center overflow-hidden rounded-xl border border-slate-200 bg-slate-100">{image ? <Image src={image.url} alt="생성 결과" fill unoptimized sizes="(min-width: 1280px) 55vw, 100vw" className="object-contain" /> : <ErrorResult message={run.error} />}{run.status === "error" && image && <div className="absolute inset-x-3 bottom-3 rounded-lg bg-red-950/85 px-3 py-2 text-xs text-white">이미지는 저장됐지만 후속 처리 중 오류가 발생했습니다. {run.error}</div>}{run.images.length > 1 && <Badge className="absolute right-3 top-3 bg-white/90">+{run.images.length - 1}장</Badge>}</div><div className="space-y-3"><Timing label="전체 완료" value={run.timings.totalMs} strong /><Timing label="API 생성" value={run.timings.apiMs} /><Timing label="생성 이미지" suffix={`${run.images.length}장`} /><Timing label="이미지 처리량" suffix={formatRate(imagesPerMinute, "장/분")} /><UsageCard run={run} /></div></div>;
+  return <><div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_250px]"><div className="preview-grid relative grid min-h-[430px] place-items-center overflow-hidden rounded-xl border border-slate-200 bg-slate-100">{image ? <Image src={image.url} alt="생성 결과" fill unoptimized sizes="(min-width: 1280px) 55vw, 100vw" className="object-contain" /> : <ErrorResult message={run.error} />}{run.status === "error" && image && <div className="absolute inset-x-3 bottom-3 rounded-lg bg-red-950/85 px-3 py-2 text-xs text-white">이미지는 저장됐지만 후속 처리 중 오류가 발생했습니다. {run.error}</div>}{run.images.length > 1 && <Badge className="absolute right-3 top-3 bg-white/90">+{run.images.length - 1}장</Badge>}</div><div className="space-y-3"><Timing label="전체 완료" value={run.timings.totalMs} strong /><Timing label="API 생성" value={run.timings.apiMs} /><Timing label="생성 이미지" suffix={`${run.images.length}장`} /><Timing label="이미지 처리량" suffix={formatRate(imagesPerMinute, "장/분")} /><UsageCard run={run} />{run.images.map((item, index) => <a key={item.filename} href={item.url} download={item.filename} className="flex h-9 items-center justify-center gap-2 rounded-lg border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50"><Download size={13} /> 이미지 {index + 1} 다운로드</a>)}</div></div><ResponseJsonCard run={run} /></>;
 }
 
 export function TextResult({ run, liveOutput }: { run: RunLog | null; liveOutput: string }) {
   const output = liveOutput || run?.outputText || "";
   if (!run && !liveOutput) return <EmptyState kind="text" />;
   const generationMs = run?.textMetrics?.ttftMs ? Math.max(0, run.timings.totalMs - run.textMetrics.ttftMs) : undefined;
-  return <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_250px]"><div className="relative min-h-[430px] overflow-auto rounded-xl border border-slate-800 bg-slate-950 p-5 text-slate-100" aria-live="polite"><div className="mb-4 flex items-center gap-2 border-b border-slate-800 pb-3 text-[11px] uppercase tracking-widest text-slate-500"><span className={`h-2 w-2 rounded-full ${liveOutput ? "animate-pulse bg-emerald-400" : "bg-slate-600"}`} /> model output</div>{run?.status === "error" && !output ? <ErrorResult message={run.error} dark /> : <pre className="whitespace-pre-wrap font-sans text-sm leading-7">{output}<span className={liveOutput ? "ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-emerald-400 align-middle" : ""} /></pre>}</div><div className="space-y-3">{run ? <><Timing label="전체 완료" value={run.timings.totalMs} strong /><Timing label="첫 토큰 TTFT" value={run.textMetrics?.ttftMs} /><Timing label="첫 토큰 이후 생성" value={generationMs} /><Timing label="생성 속도" suffix={formatRate(run.textMetrics?.tokensPerSecond, "tok/s")} /><UsageCard run={run} /></> : <div className="rounded-xl border border-slate-200 p-4 text-xs leading-5 text-slate-500"><LoaderCircle className="mb-2 animate-spin" size={16} />응답을 스트리밍하고 있습니다.</div>}</div></div>;
+  return <><div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_250px]"><div className="relative min-h-[430px] overflow-auto rounded-xl border border-slate-800 bg-slate-950 p-5 text-slate-100" aria-live="polite"><div className="mb-4 flex items-center gap-2 border-b border-slate-800 pb-3 text-[11px] uppercase tracking-widest text-slate-500"><span className={`h-2 w-2 rounded-full ${liveOutput ? "animate-pulse bg-emerald-400" : "bg-slate-600"}`} /> model output</div>{run?.status === "error" && !output ? <ErrorResult message={run.error} dark /> : <pre className="whitespace-pre-wrap font-sans text-sm leading-7">{output}<span className={liveOutput ? "ml-0.5 inline-block h-4 w-1.5 animate-pulse bg-emerald-400 align-middle" : ""} /></pre>}</div><div className="space-y-3">{run ? <><Timing label="전체 완료" value={run.timings.totalMs} strong /><Timing label="첫 토큰 TTFT" value={run.textMetrics?.ttftMs} /><Timing label="첫 토큰 이후 생성" value={generationMs} /><Timing label="생성 속도" suffix={formatRate(run.textMetrics?.tokensPerSecond, "tok/s")} /><UsageCard run={run} /></> : <div className="rounded-xl border border-slate-200 p-4 text-xs leading-5 text-slate-500"><LoaderCircle className="mb-2 animate-spin" size={16} />응답을 스트리밍하고 있습니다.</div>}</div></div>{run && <ResponseJsonCard run={run} />}</>;
 }
 
 export function TtsResult({ run }: { run: RunLog | null }) {
   if (!run) return <EmptyState kind="tts" />;
-  if (!run.audio) return <div className="grid min-h-[430px] place-items-center rounded-xl border border-slate-200 bg-slate-50"><ErrorResult message={run.error} /></div>;
+  if (!run.audio) return <><div className="grid min-h-[430px] place-items-center rounded-xl border border-slate-200 bg-slate-50"><ErrorResult message={run.error} /></div><ResponseJsonCard run={run} /></>;
   const format = String(run.parameters.responseFormat || run.audio.filename.split(".").pop() || "audio").toUpperCase();
-  return <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_250px]">
+  return <><div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_250px]">
     <div className="grid min-h-[430px] place-items-center rounded-xl border border-slate-800 bg-slate-950 p-8 text-white">
       <div className="w-full max-w-xl text-center">
         <div className="mx-auto grid h-16 w-16 place-items-center rounded-2xl bg-emerald-400 text-slate-950"><Volume2 size={28} /></div>
@@ -39,8 +39,8 @@ export function TtsResult({ run }: { run: RunLog | null }) {
         {run.audio.mimeType === "audio/L16" && <p className="mt-3 text-[11px] text-amber-300">PCM은 브라우저에서 바로 재생되지 않을 수 있습니다. 다운로드 후 호환 플레이어를 사용하세요.</p>}
       </div>
     </div>
-    <div className="space-y-3"><Timing label="전체 완료" value={run.timings.totalMs} strong /><Timing label="오디오 수신 완료" value={run.timings.apiMs} /><Timing label="첫 바이트 TTFB" value={run.speechMetrics?.timeToFirstByteMs} /><Timing label="입력 처리량" suffix={formatRate(run.speechMetrics?.charactersPerSecond, "자/초")} /><Timing label="오디오 크기" suffix={formatBytes(run.audio.bytes)} /></div>
-  </div>;
+    <div className="space-y-3"><Timing label="전체 완료" value={run.timings.totalMs} strong /><Timing label="오디오 수신 완료" value={run.timings.apiMs} /><Timing label="첫 바이트 TTFB" value={run.speechMetrics?.timeToFirstByteMs} /><Timing label="입력 처리량" suffix={formatRate(run.speechMetrics?.charactersPerSecond, "자/초")} /><Timing label="오디오 크기" suffix={formatBytes(run.audio.bytes)} /><UsageCard run={run} /></div>
+  </div><ResponseJsonCard run={run} /></>;
 }
 
 function formatBytes(value: number) {
@@ -48,7 +48,14 @@ function formatBytes(value: number) {
 }
 
 function UsageCard({ run }: { run: RunLog }) {
-  return <div className="rounded-xl border border-slate-200 p-3 text-xs"><p className="font-semibold text-slate-800">토큰 및 크레딧</p><p className="mt-2 flex justify-between text-slate-500"><span>Input / Output</span><b className="text-slate-800">{run.usage.inputTokens ?? "—"} / {run.usage.outputTokens ?? "—"}</b></p><p className="mt-1.5 flex justify-between text-slate-500"><span>예상 크레딧</span><b className="text-slate-800">{formatCredit(run.usage.estimatedCredit)}</b></p><p className="mt-2 border-t border-slate-100 pt-2 text-[11px] text-slate-400">단가 미등록 모델은 실제 잔액 차이로 확인하세요.</p></div>;
+  return <div className="rounded-xl border border-slate-200 p-3 text-xs"><p className="font-semibold text-slate-800">토큰 및 GMS 크레딧</p><p className="mt-2 flex justify-between text-slate-500"><span>실제 Input / Output</span><b className="text-slate-800">{run.usage.inputTokens ?? "—"} / {run.usage.outputTokens ?? "—"}</b></p><p className="mt-1.5 flex justify-between text-slate-500"><span>총 사용 토큰</span><b className="text-slate-800">{run.usage.totalTokens === undefined ? "—" : `${run.usage.totalTokens.toLocaleString("ko-KR")} tok`}</b></p><p className="mt-1.5 flex justify-between text-slate-500"><span>실제 GMS 차감</span><b className="text-slate-800">{formatCredit(run.usage.actualCredit)}</b></p>{run.usage.estimatedCredit !== undefined && <p className="mt-1.5 flex justify-between text-slate-400"><span>참고 추정값</span><span>{formatCredit(run.usage.estimatedCredit)}</span></p>}<p className="mt-2 border-t border-slate-100 pt-2 text-[11px] text-slate-400">토큰은 공급자 응답값, 실제 차감은 동시 요청 1개에서 실행 전후 GMS 잔액 차이로 기록됩니다.</p></div>;
+}
+
+function ResponseJsonCard({ run }: { run: RunLog }) {
+  return <details className="mt-4 overflow-hidden rounded-xl border border-slate-200 bg-white">
+    <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-xs font-semibold text-slate-700"><span className="flex items-center gap-2"><Braces size={14} /> 응답 결과 JSON</span><a href={`/api/logs/${encodeURIComponent(run.id)}?download=1`} download={`gms-run-${run.id}.json`} onClick={(event) => event.stopPropagation()} className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-200 px-2.5 text-[11px] hover:bg-slate-50"><Download size={12} /> JSON 다운로드</a></summary>
+    <div className="border-t border-slate-100 p-3"><p className="mb-2 text-[11px] leading-5 text-slate-400">공급자 응답 요약과 로컬 측정·파일 정보를 함께 표시합니다. 이미지 Base64 원문은 파일로 저장하고 JSON에서는 생략합니다.</p><pre className="max-h-80 overflow-auto rounded-lg bg-slate-950 p-3 text-[11px] leading-5 text-slate-200">{JSON.stringify(run, null, 2)}</pre></div>
+  </details>;
 }
 
 function ErrorResult({ message, dark = false }: { message?: string; dark?: boolean }) {

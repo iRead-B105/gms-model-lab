@@ -1,8 +1,12 @@
-import { TTS_RESPONSE_FORMATS, TTS_VOICES, type GenerateRequest, type ImageProvider, type Provider, type TextGenerateRequest, type TtsGenerateRequest } from "@/lib/types";
+import { TTS_RESPONSE_FORMATS, TTS_VOICES, type ContextImageInput, type GenerateRequest, type ImageProvider, type Provider, type TextGenerateRequest, type TtsGenerateRequest } from "@/lib/types";
 import { isRecord, type JsonObject } from "@/lib/server/gms/common";
 import { getImageAspectRatios, getImageSizePresets, supportsFlexibleOpenAISizes, type ImageAspectRatio } from "@/lib/image-sizing";
 
-const MAX_BODY_BYTES = 256 * 1024;
+const MAX_BODY_BYTES = 18 * 1024 * 1024;
+const MAX_CONTEXT_IMAGES = 4;
+const MAX_CONTEXT_IMAGE_BYTES = 3 * 1024 * 1024;
+const MAX_CONTEXT_TOTAL_BYTES = 12 * 1024 * 1024;
+const CONTEXT_MIME_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
 const PROVIDERS: Provider[] = ["openai", "gemini", "anthropic"];
 const IMAGE_PROVIDERS: ImageProvider[] = ["openai", "gemini"];
 
@@ -70,6 +74,36 @@ function customValue(value: unknown) {
   return value;
 }
 
+function contextImagesValue(value: unknown): ContextImageInput[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > MAX_CONTEXT_IMAGES) {
+    throw new RequestValidationError(`컨텍스트 이미지는 최대 ${MAX_CONTEXT_IMAGES}개까지 업로드할 수 있습니다.`);
+  }
+  let totalBytes = 0;
+  return value.map((item, index) => {
+    if (!isRecord(item)) throw new RequestValidationError(`컨텍스트 이미지 ${index + 1}의 형식이 올바르지 않습니다.`);
+    const name = requiredString(item.name, `컨텍스트 이미지 ${index + 1} 파일명`, 255);
+    const mimeType = enumValue(item.mimeType, CONTEXT_MIME_TYPES, `컨텍스트 이미지 ${index + 1} 형식`);
+    const base64 = requiredString(item.base64, `컨텍스트 이미지 ${index + 1} 데이터`, Math.ceil(MAX_CONTEXT_IMAGE_BYTES * 4 / 3) + 4);
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(base64) || base64.length % 4 !== 0) {
+      throw new RequestValidationError(`컨텍스트 이미지 ${index + 1}의 Base64 데이터가 올바르지 않습니다.`);
+    }
+    const decoded = Buffer.from(base64, "base64");
+    if (!decoded.byteLength || decoded.byteLength > MAX_CONTEXT_IMAGE_BYTES) {
+      throw new RequestValidationError(`컨텍스트 이미지 한 장은 3MB 이하여야 합니다. (${name})`, 413);
+    }
+    const validSignature = mimeType === "image/png"
+      ? decoded.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+      : mimeType === "image/jpeg"
+        ? decoded[0] === 0xff && decoded[1] === 0xd8 && decoded.at(-2) === 0xff && decoded.at(-1) === 0xd9
+        : decoded.subarray(0, 4).toString("ascii") === "RIFF" && decoded.subarray(8, 12).toString("ascii") === "WEBP";
+    if (!validSignature) throw new RequestValidationError(`컨텍스트 이미지 ${name}의 실제 파일 형식이 ${mimeType}과 일치하지 않습니다.`);
+    totalBytes += decoded.byteLength;
+    if (totalBytes > MAX_CONTEXT_TOTAL_BYTES) throw new RequestValidationError("컨텍스트 이미지 전체 크기는 12MB 이하여야 합니다.", 413);
+    return { name, mimeType, base64, bytes: decoded.byteLength };
+  });
+}
+
 export function parseKeyBody(body: JsonObject) {
   return { key: requiredString(body.key, "GMS 키", 512) };
 }
@@ -108,6 +142,7 @@ export function parseImageBody(body: JsonObject): GenerateRequest {
     userPrompt: requiredString(body.userPrompt, "사용자 프롬프트", 100_000),
     parameters,
     customParameters: customValue(body.customParameters),
+    contextImages: contextImagesValue(body.contextImages),
   };
 }
 
@@ -139,6 +174,7 @@ export function parseTextBody(body: JsonObject): TextGenerateRequest {
       stopSequences,
     },
     customParameters: customValue(body.customParameters),
+    contextImages: contextImagesValue(body.contextImages),
   };
 }
 

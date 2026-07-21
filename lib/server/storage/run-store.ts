@@ -6,13 +6,15 @@ const DATA_DIR = path.join(process.cwd(), "data");
 const RUNS_DIR = path.join(DATA_DIR, "runs");
 const IMAGES_DIR = path.join(DATA_DIR, "images");
 const AUDIO_DIR = path.join(DATA_DIR, "audio");
+const CONTEXT_DIR = path.join(DATA_DIR, "context");
 const RUN_ID = /^[a-zA-Z0-9-]{1,100}$/;
 const IMAGE_FILE = /^[a-zA-Z0-9-]{1,100}-[1-4]\.(png|webp|jpg)$/;
 const AUDIO_FILE = /^[a-zA-Z0-9-]{1,100}\.(mp3|opus|aac|flac|wav|pcm)$/;
+const CONTEXT_FILE = /^[a-zA-Z0-9-]{1,100}-context-[1-4]\.(png|webp|jpg)$/;
 const SENSITIVE_FIELD = /^(key|api_?key|gms_?key|authorization|password|secret|credential|access_?token|refresh_?token|bearer)$/i;
 
 async function ensureDirs() {
-  await Promise.all([mkdir(RUNS_DIR, { recursive: true }), mkdir(IMAGES_DIR, { recursive: true }), mkdir(AUDIO_DIR, { recursive: true })]);
+  await Promise.all([mkdir(RUNS_DIR, { recursive: true }), mkdir(IMAGES_DIR, { recursive: true }), mkdir(AUDIO_DIR, { recursive: true }), mkdir(CONTEXT_DIR, { recursive: true })]);
 }
 
 function redactSensitive(value: unknown, depth = 0): unknown {
@@ -51,6 +53,24 @@ export async function saveAudio(runId: string, bytes: Uint8Array, format: "mp3" 
   return { filename, mimeType: mimeTypes[format], bytes: bytes.byteLength, url: `/api/audio/${filename}` };
 }
 
+export async function saveContextImage(runId: string, index: number, bytes: Uint8Array, mimeType: "image/png" | "image/jpeg" | "image/webp", name: string) {
+  if (!RUN_ID.test(runId) || index < 0 || index > 3) throw new Error("컨텍스트 이미지 저장 경로가 올바르지 않습니다.");
+  await ensureDirs();
+  const extension = mimeType === "image/jpeg" ? "jpg" : mimeType.slice("image/".length);
+  const filename = `${runId}-context-${index + 1}.${extension}`;
+  await atomicWrite(path.join(CONTEXT_DIR, filename), bytes);
+  return { filename, name, mimeType, bytes: bytes.byteLength, url: `/api/context/${filename}` };
+}
+
+export async function updateRunActualCredit(id: string, actualCredit: number) {
+  if (!Number.isFinite(actualCredit) || actualCredit < 0) throw new Error("실제 차감 크레딧 값이 올바르지 않습니다.");
+  const run = await getRun(id);
+  if (!run) return null;
+  const updated = { ...run, usage: { ...run.usage, actualCredit } };
+  await saveRun(updated);
+  return updated;
+}
+
 export async function saveRun(run: RunLog) {
   if (!RUN_ID.test(run.id)) throw new Error("실행 기록 ID가 올바르지 않습니다.");
   await ensureDirs();
@@ -81,10 +101,12 @@ export async function deleteRun(id: string) {
   if (!run) return false;
   const images = Array.isArray(run.images) ? run.images.filter((image) => IMAGE_FILE.test(image.filename)) : [];
   const audio = run.audio && AUDIO_FILE.test(run.audio.filename) ? run.audio : null;
+  const contextImages = Array.isArray(run.contextImages) ? run.contextImages.filter((image) => CONTEXT_FILE.test(image.filename)) : [];
   await Promise.all([
     unlink(path.join(RUNS_DIR, `${id}.json`)),
     ...images.map((image) => unlink(path.join(IMAGES_DIR, image.filename)).catch(() => undefined)),
     ...(audio ? [unlink(path.join(AUDIO_DIR, audio.filename)).catch(() => undefined)] : []),
+    ...contextImages.map((image) => unlink(path.join(CONTEXT_DIR, image.filename)).catch(() => undefined)),
   ]);
   return true;
 }
@@ -98,5 +120,11 @@ export async function readImage(filename: string) {
 export async function readAudio(filename: string) {
   if (!AUDIO_FILE.test(filename)) return null;
   try { return await readFile(path.join(AUDIO_DIR, filename)); }
+  catch { return null; }
+}
+
+export async function readContextImage(filename: string) {
+  if (!CONTEXT_FILE.test(filename)) return null;
+  try { return await readFile(path.join(CONTEXT_DIR, filename)); }
   catch { return null; }
 }

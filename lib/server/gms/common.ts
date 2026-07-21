@@ -67,13 +67,13 @@ export function usageCount(value: unknown) {
   return Number.isFinite(count) && count >= 0 ? count : undefined;
 }
 
-export function calculateUsage(kind: "image" | "text", model: string, inputTokens?: number, outputTokens?: number): Usage {
+export function calculateUsage(kind: "image" | "text", model: string, inputTokens?: number, outputTokens?: number, providerTotalTokens?: number): Usage {
   const catalog = kind === "image" ? KNOWN_IMAGE_MODELS : KNOWN_TEXT_MODELS;
   const rate = catalog.find((item) => item.id === model)?.rate;
   return {
     inputTokens,
     outputTokens,
-    totalTokens: inputTokens !== undefined && outputTokens !== undefined ? inputTokens + outputTokens : undefined,
+    totalTokens: providerTotalTokens ?? (inputTokens !== undefined && outputTokens !== undefined ? inputTokens + outputTokens : undefined),
     estimatedCredit: rate && inputTokens !== undefined && outputTokens !== undefined ? inputTokens * rate.input + outputTokens * rate.output : undefined,
   };
 }

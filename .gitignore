@@ -41,8 +41,10 @@ next-env.d.ts
 /data/runs/*.json
 /data/images/*
 /data/audio/*
+/data/context/*
 !/data/runs/.gitkeep
 !/data/images/.gitkeep
 !/data/audio/.gitkeep
+!/data/context/.gitkeep
 .dev.*.log
 *.tsbuildinfo

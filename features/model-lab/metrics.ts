@@ -16,8 +16,8 @@ export type BenchmarkStats = {
   inputCharacters: Distribution;
   audioBytes: Distribution;
   outputTokens: Distribution;
-  estimatedCreditPerUnit?: number;
-  estimatedCreditSamples: number;
+  actualCreditPerUnit?: number;
+  actualCreditSamples: number;
   generatedImages: number;
 };
 
@@ -41,17 +41,17 @@ export function calculateBenchmarkStats(logs: RunLog[], kind: TestKind): Benchma
   const outputTokens = successful
     .map((run) => run.usage.outputTokens)
     .filter((value): value is number => typeof value === "number" && Number.isFinite(value) && value > 0);
-  let estimatedCredits = 0;
+  let actualCredits = 0;
   let pricedUnits = 0;
-  let estimatedCreditSamples = 0;
+  let actualCreditSamples = 0;
 
   for (const run of successful) {
-    if (typeof run.usage.estimatedCredit !== "number" || !Number.isFinite(run.usage.estimatedCredit)) continue;
+    if (typeof run.usage.actualCredit !== "number" || !Number.isFinite(run.usage.actualCredit)) continue;
     const units = kind === "image" ? run.images.length : 1;
     if (units < 1) continue;
-    estimatedCredits += run.usage.estimatedCredit;
+    actualCredits += run.usage.actualCredit;
     pricedUnits += units;
-    estimatedCreditSamples += 1;
+    actualCreditSamples += 1;
   }
 
   return {
@@ -68,8 +68,8 @@ export function calculateBenchmarkStats(logs: RunLog[], kind: TestKind): Benchma
     inputCharacters: distribution(successful.map((run) => run.speechMetrics?.characterCount)),
     audioBytes: distribution(successful.map((run) => run.audio?.bytes)),
     outputTokens: distribution(outputTokens),
-    estimatedCreditPerUnit: pricedUnits ? estimatedCredits / pricedUnits : undefined,
-    estimatedCreditSamples,
+    actualCreditPerUnit: pricedUnits ? actualCredits / pricedUnits : undefined,
+    actualCreditSamples,
     generatedImages: successful.reduce((sum, run) => sum + run.images.length, 0),
   };
 }
