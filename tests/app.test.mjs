@@ -250,7 +250,7 @@ test("로그·출력·컨텍스트 이미지를 원자적으로 저장하고 안
   assert.match(store, /CONTEXT_FILE\.test/);
   assert.match(store, /saveAudio/);
   assert.match(store, /saveContextImage/);
-  assert.match(store, /updateRunActualCredit/);
+  assert.match(store, /updateRunCreditMeasurement/);
   assert.match(store, /catch \{ return null; \}/);
 });
 
@@ -276,14 +276,17 @@ test("공급자별 이미지 컨텍스트, 실제 크레딧, JSON·결과 다운
   assert.match(imageGeneration, /totalTokenCount/);
   assert.match(validation, /contextImagesValue/);
   assert.match(page, /ContextImagePicker/);
-  assert.match(page, /storeActualCredit/);
-  assert.match(page, /Input·Output·총 토큰 \/ GMS 차감/);
+  assert.match(page, /storeCreditMeasurement/);
+  assert.match(page, /Input·Output \/ GMS 사용량/);
+  assert.match(page, /GMS 사용/);
+  assert.match(page, /차감 측정 실패/);
   assert.match(page, /run\.usage\.totalTokens/);
   assert.doesNotMatch(page, /최근 성공 12회/);
   assert.match(results, /응답 결과 JSON/);
   assert.match(results, /이미지 \{index \+ 1\} 다운로드/);
   assert.match(route, /Content-Disposition/);
   assert.match(route, /actualCredit/);
+  assert.match(route, /batch-only/);
 });
 
 test("화면에서 중복 모델 ID를 공급자별로 구분하고 요청 취소를 지원한다", async () => {

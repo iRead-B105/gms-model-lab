@@ -62,11 +62,19 @@ export async function saveContextImage(runId: string, index: number, bytes: Uint
   return { filename, name, mimeType, bytes: bytes.byteLength, url: `/api/context/${filename}` };
 }
 
-export async function updateRunActualCredit(id: string, actualCredit: number) {
-  if (!Number.isFinite(actualCredit) || actualCredit < 0) throw new Error("실제 차감 크레딧 값이 올바르지 않습니다.");
+export async function updateRunCreditMeasurement(id: string, measurement: { actualCredit?: number; status: "measured" | "unavailable" | "batch-only"; error?: string }) {
+  if (measurement.actualCredit !== undefined && (!Number.isFinite(measurement.actualCredit) || measurement.actualCredit < 0)) throw new Error("실제 차감 크레딧 값이 올바르지 않습니다.");
   const run = await getRun(id);
   if (!run) return null;
-  const updated = { ...run, usage: { ...run.usage, actualCredit } };
+  const updated = {
+    ...run,
+    usage: {
+      ...run.usage,
+      ...(measurement.actualCredit !== undefined ? { actualCredit: measurement.actualCredit } : {}),
+      creditMeasurementStatus: measurement.status,
+      ...(measurement.error ? { creditMeasurementError: measurement.error.slice(0, 500) } : {}),
+    },
+  };
   await saveRun(updated);
   return updated;
 }

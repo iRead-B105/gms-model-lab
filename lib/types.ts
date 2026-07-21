@@ -20,6 +20,8 @@ export type Usage = {
   totalTokens?: number;
   estimatedCredit?: number;
   actualCredit?: number;
+  creditMeasurementStatus?: "measured" | "unavailable" | "batch-only";
+  creditMeasurementError?: string;
 };
 
 export type ContextImageInput = {

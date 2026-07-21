@@ -12,7 +12,7 @@ export function formatDuration(value?: number) {
 export function formatCredit(value?: number) {
   return value === undefined
     ? "측정 안 됨"
-    : value.toLocaleString("ko-KR", { maximumFractionDigits: 4 });
+    : `${value.toLocaleString("ko-KR", { maximumFractionDigits: 4 })} Credit`;
 }
 
 export function runCredit(run: RunLog) {

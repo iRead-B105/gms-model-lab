@@ -23,11 +23,19 @@ import { RequestValueSummary, type RequestValueRow } from "@/features/model-lab/
 import { ContextImagePicker } from "@/features/model-lab/components/context-image-picker";
 import { ImageResult, LatencyChart, TextResult, TtsResult } from "@/features/model-lab/components/results";
 import { calculateBenchmarkStats, formatRate } from "@/features/model-lab/metrics";
-import { csvCell, formatCredit as credit, formatDuration as ms, providerName, readJsonResponse, runCredit, runKind } from "@/features/model-lab/utils";
+import { csvCell, formatCredit as credit, formatDuration as ms, providerName, readJsonResponse, runKind } from "@/features/model-lab/utils";
 import { readStoredGmsKey, removeStoredGmsKey, saveStoredGmsKey } from "@/features/model-lab/key-storage";
 
 type CreditInfo = { totalCredit: number; usedCredit: number; remainCredit: number; expiredDate: string };
 const creditDelta = (before: CreditInfo, after: CreditInfo) => Math.max(0, before.remainCredit - after.remainCredit, after.usedCredit - before.usedCredit);
+const gmsCreditLabel = (run: RunLog) => typeof run.usage.actualCredit === "number"
+  ? credit(run.usage.actualCredit)
+  : run.usage.creditMeasurementStatus === "unavailable"
+    ? "차감 측정 실패"
+    : run.usage.creditMeasurementStatus === "batch-only"
+      ? "배치 단위 측정"
+      : "차감 기록 없음";
+const creditErrorMessage = (error: unknown, fallback: string) => (error instanceof Error ? error.message : fallback).slice(0, 500);
 const imagePromptDefault = "A cinematic product photo of a translucent smart speaker on a brushed steel desk, soft morning light, realistic reflections, editorial photography, ultra detailed.";
 const textPromptDefault = "실무에서 생성형 AI 모델의 응답 지연시간을 비교할 때 확인해야 할 핵심 지표를 5가지로 정리해줘.";
 const ttsPromptDefault = "안녕하세요. GMS 음성 합성 모델의 응답 속도와 음질을 테스트하고 있습니다.";
@@ -212,14 +220,14 @@ export default function Home() {
     return body as CreditInfo;
   }
 
-  async function storeActualCredit(run: RunLog, actualCredit: number) {
+  async function storeCreditMeasurement(run: RunLog, measurement: { actualCredit?: number; status: "measured" | "unavailable" | "batch-only"; error?: string }) {
     const response = await fetch(`/api/logs/${encodeURIComponent(run.id)}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ actualCredit }),
+      body: JSON.stringify(measurement),
     });
     const body = await readJsonResponse<RunLog & { error?: string }>(response);
-    if (!response.ok) throw new Error(body.error || "실제 차감 크레딧을 저장하지 못했습니다.");
+    if (!response.ok) throw new Error(body.error || "GMS 사용량 측정 상태를 저장하지 못했습니다.");
     return body;
   }
 
@@ -440,7 +448,9 @@ export default function Home() {
     runAbortRef.current = controller;
     setRunning(true); setNotice(""); setLiveOutput(""); setLastBatchCredit(null); setProgress({ done: 0, total: repeat });
     let beforeCredit: CreditInfo | undefined;
-    try { beforeCredit = await fetchCredit(); } catch { /* Generation can continue without balance measurement. */ }
+    let creditMeasurementError: string | undefined;
+    try { beforeCredit = await fetchCredit(); }
+    catch (error) { creditMeasurementError = creditErrorMessage(error, "실행 전 GMS 잔액을 조회하지 못했습니다."); }
     let cursor = 0;
     const results: RunLog[] = [];
     const worker = async () => {
@@ -454,13 +464,22 @@ export default function Home() {
               ? await runText(requestPayload, index === 0, controller.signal)
               : await runTts(requestPayload, controller.signal);
           let measuredResult = result;
-          if (concurrency === 1 && beforeCredit !== undefined && !controller.signal.aborted) {
-            try {
-              const after = await fetchSettledCredit(beforeCredit);
-              const actualCredit = creditDelta(beforeCredit, after);
-              beforeCredit = after;
-              measuredResult = await storeActualCredit(result, actualCredit);
-            } catch { /* Keep the generation result when credit measurement fails. */ }
+          if (!controller.signal.aborted && concurrency === 1) {
+            if (beforeCredit !== undefined) {
+              try {
+                const after = await fetchSettledCredit(beforeCredit);
+                const actualCredit = creditDelta(beforeCredit, after);
+                beforeCredit = after;
+                measuredResult = await storeCreditMeasurement(result, { actualCredit, status: "measured" });
+              } catch (error) {
+                creditMeasurementError = creditErrorMessage(error, "실행 후 GMS 잔액을 조회하지 못했습니다.");
+                measuredResult = await storeCreditMeasurement(result, { status: "unavailable", error: creditMeasurementError }).catch(() => ({ ...result, usage: { ...result.usage, creditMeasurementStatus: "unavailable" as const, creditMeasurementError } }));
+              }
+            } else {
+              measuredResult = await storeCreditMeasurement(result, { status: "unavailable", error: creditMeasurementError || "실행 전 GMS 잔액을 조회하지 못했습니다." }).catch(() => ({ ...result, usage: { ...result.usage, creditMeasurementStatus: "unavailable" as const, creditMeasurementError } }));
+            }
+          } else if (!controller.signal.aborted) {
+            measuredResult = await storeCreditMeasurement(result, { status: "batch-only" }).catch(() => ({ ...result, usage: { ...result.usage, creditMeasurementStatus: "batch-only" as const } }));
           }
           results.push(measuredResult);
         } catch (error) {
@@ -481,13 +500,13 @@ export default function Home() {
         try {
           const after = beforeCredit ? await fetchSettledCredit(beforeCredit) : await fetchCredit();
           if (beforeCredit !== undefined) consumed = creditDelta(beforeCredit, after);
-        } catch { /* Generation result remains valid when balance refresh fails. */ }
+        } catch (error) { creditMeasurementError = creditErrorMessage(error, "GMS 배치 차감량을 조회하지 못했습니다."); }
       }
       setLastBatchCredit(consumed);
       const successes = results.filter((run) => run.status === "success").length;
       setNotice(controller.signal.aborted
         ? `테스트를 취소했습니다. 완료된 요청 ${results.length}개는 기록에 남아 있습니다.`
-        : `${repeat}회 테스트 완료 · 성공 ${successes} · 실패 ${repeat - successes}${consumed !== null ? ` · 실제 차감 ${credit(consumed)}` : ""}`);
+        : `${repeat}회 테스트 완료 · 성공 ${successes} · 실패 ${repeat - successes}${consumed !== null ? ` · 실제 차감 ${credit(consumed)}` : creditMeasurementError ? ` · GMS 차감 측정 실패: ${creditMeasurementError}` : ""}`);
     } finally {
       runAbortRef.current = null;
       setRunning(false);
@@ -564,8 +583,8 @@ export default function Home() {
 
   function exportLogs(format: "json" | "csv") {
     const data = format === "json" ? JSON.stringify(filteredLogs, null, 2) : [
-      "id,kind,createdAt,status,provider,model,totalMs,apiMs,ttftMs,tokensPerSecond,imageCount,imagesPerMinute,speechTtfbMs,charactersPerSecond,audioBytes,inputTokens,outputTokens,totalTokens,actualGmsCredit,estimatedCredit,prompt",
-      ...filteredLogs.map((run) => [run.id, runKind(run), run.createdAt, run.status, run.provider, run.model, run.timings.totalMs, run.timings.apiMs, run.textMetrics?.ttftMs ?? "", run.textMetrics?.tokensPerSecond ?? "", run.images.length, run.images.length && run.timings.totalMs > 0 ? run.images.length * 60_000 / run.timings.totalMs : "", run.speechMetrics?.timeToFirstByteMs ?? "", run.speechMetrics?.charactersPerSecond ?? "", run.audio?.bytes ?? "", run.usage.inputTokens ?? "", run.usage.outputTokens ?? "", run.usage.totalTokens ?? "", run.usage.actualCredit ?? "", run.usage.estimatedCredit ?? "", run.userPrompt].map(csvCell).join(",")),
+      "id,kind,createdAt,status,provider,model,totalMs,apiMs,ttftMs,tokensPerSecond,imageCount,imagesPerMinute,speechTtfbMs,charactersPerSecond,audioBytes,inputTokens,outputTokens,gmsUsedTokens,actualGmsCredit,creditMeasurementStatus,creditMeasurementError,estimatedCredit,prompt",
+      ...filteredLogs.map((run) => [run.id, runKind(run), run.createdAt, run.status, run.provider, run.model, run.timings.totalMs, run.timings.apiMs, run.textMetrics?.ttftMs ?? "", run.textMetrics?.tokensPerSecond ?? "", run.images.length, run.images.length && run.timings.totalMs > 0 ? run.images.length * 60_000 / run.timings.totalMs : "", run.speechMetrics?.timeToFirstByteMs ?? "", run.speechMetrics?.charactersPerSecond ?? "", run.audio?.bytes ?? "", run.usage.inputTokens ?? "", run.usage.outputTokens ?? "", run.usage.totalTokens ?? "", run.usage.actualCredit ?? "", run.usage.creditMeasurementStatus ?? "", run.usage.creditMeasurementError ?? "", run.usage.estimatedCredit ?? "", run.userPrompt].map(csvCell).join(",")),
     ].join("\n");
     const url = URL.createObjectURL(new Blob([format === "csv" ? `\uFEFF${data}` : data], { type: format === "json" ? "application/json" : "text/csv;charset=utf-8" }));
     const anchor = document.createElement("a"); anchor.href = url; anchor.download = `gms-model-lab-${mode}-${new Date().toISOString().slice(0, 10)}.${format}`; anchor.click(); URL.revokeObjectURL(url);
@@ -678,7 +697,7 @@ export default function Home() {
 
         <section className="mt-5"><Panel title="로컬 테스트 기록" icon={<History size={16} />} description={`${mode === "image" ? "이미지" : mode === "tts" ? "TTS" : "텍스트"} ${modeLogs.length}개 · 전체 ${logs.length}개 기록`} action={<div className="flex gap-2"><Button variant="outline" size="sm" onClick={() => exportLogs("csv")}><Download size={13} /> CSV</Button><Button variant="outline" size="sm" onClick={() => exportLogs("json")}>JSON</Button></div>}>
           <div className="mb-4 flex flex-col gap-2 sm:flex-row"><div className="relative flex-1"><Search className="absolute left-3 top-2.5 text-slate-400" size={16} /><Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="모델, 프롬프트 또는 응답 검색" className="pl-9" /></div><Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="sm:w-36"><option value="all">모든 상태</option><option value="success">성공</option><option value="error">실패</option></Select></div>
-          <div className="overflow-x-auto"><table className="w-full min-w-[1020px] text-left text-sm"><thead><tr className="border-y border-slate-100 text-[11px] uppercase tracking-wider text-slate-400"><th className="px-3 py-3 font-semibold">상태 / 시간</th><th className="px-3 py-3 font-semibold">모델</th><th className="px-3 py-3 font-semibold">프롬프트</th><th className="px-3 py-3 font-semibold">{mode === "text" ? "전체 / TTFT" : mode === "tts" ? "전체 / 첫 바이트" : "전체 / API"}</th><th className="px-3 py-3 font-semibold">{mode === "tts" ? "오디오 / GMS 차감" : "Input·Output·총 토큰 / GMS 차감"}</th><th className="px-3 py-3 font-semibold text-right">작업</th></tr></thead><tbody>{filteredLogs.map((run) => <tr key={run.id} onClick={() => setSelectedId(run.id)} className={`cursor-pointer border-b border-slate-100 hover:bg-slate-50 ${selected?.id === run.id ? "bg-slate-50" : ""}`}><td className="px-3 py-3"><span className={`inline-flex items-center gap-1.5 text-xs font-semibold ${run.status === "success" ? "text-emerald-700" : "text-red-600"}`}>{run.status === "success" ? <Check size={13} /> : <XCircle size={13} />}{run.status === "success" ? "성공" : "실패"}</span><p className="mt-1 text-[11px] text-slate-400">{new Date(run.createdAt).toLocaleString("ko-KR")}</p></td><td className="px-3 py-3"><p className="font-medium">{run.model}</p><p className="mt-1 text-xs text-slate-400">{providerName(run.provider)}</p></td><td className="max-w-sm px-3 py-3"><p className="truncate text-slate-600">{run.userPrompt}</p></td><td className="px-3 py-3 font-mono text-xs"><b>{ms(run.timings.totalMs)}</b><span className="mx-1 text-slate-300">/</span><span className="text-slate-500">{mode === "text" ? ms(run.textMetrics?.ttftMs) : mode === "tts" ? ms(run.speechMetrics?.timeToFirstByteMs) : ms(run.timings.apiMs)}</span></td><td className="whitespace-nowrap px-3 py-3 font-mono text-xs">{mode === "tts" ? <><p>{run.audio ? `${(run.audio.bytes / 1024).toFixed(1)} KB` : "—"}</p><p className="mt-1 text-slate-400">GMS {credit(runCredit(run))}</p></> : <><p><span className="text-slate-400">I</span> {run.usage.inputTokens ?? "—"} <span className="text-slate-300">·</span> <span className="text-slate-400">O</span> {run.usage.outputTokens ?? "—"} <span className="text-slate-300">·</span> <span className="text-slate-400">총</span> {run.usage.totalTokens ?? "—"}</p><p className="mt-1 text-slate-400">GMS {credit(runCredit(run))}</p></>}</td><td className="px-3 py-3"><div className="flex justify-end gap-1"><Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); reuseRun(run); }}><RefreshCcw size={13} /> 재사용</Button><Button variant="ghost" size="sm" className="text-red-500" onClick={(e) => { e.stopPropagation(); void removeRun(run); }} aria-label="기록 삭제"><Trash2 size={14} /></Button></div></td></tr>)}{!filteredLogs.length && <tr><td colSpan={6} className="py-12 text-center text-sm text-slate-400">조건에 맞는 테스트 기록이 없습니다.</td></tr>}</tbody></table></div>
+          <div className="overflow-x-auto"><table className="w-full min-w-[1020px] text-left text-sm"><thead><tr className="border-y border-slate-100 text-[11px] uppercase tracking-wider text-slate-400"><th className="px-3 py-3 font-semibold">상태 / 시간</th><th className="px-3 py-3 font-semibold">모델</th><th className="px-3 py-3 font-semibold">프롬프트</th><th className="px-3 py-3 font-semibold">{mode === "text" ? "전체 / TTFT" : mode === "tts" ? "전체 / 첫 바이트" : "전체 / API"}</th><th className="px-3 py-3 font-semibold">{mode === "tts" ? "오디오 / GMS 사용량" : "Input·Output / GMS 사용량"}</th><th className="px-3 py-3 font-semibold text-right">작업</th></tr></thead><tbody>{filteredLogs.map((run) => <tr key={run.id} onClick={() => setSelectedId(run.id)} className={`cursor-pointer border-b border-slate-100 hover:bg-slate-50 ${selected?.id === run.id ? "bg-slate-50" : ""}`}><td className="px-3 py-3"><span className={`inline-flex items-center gap-1.5 text-xs font-semibold ${run.status === "success" ? "text-emerald-700" : "text-red-600"}`}>{run.status === "success" ? <Check size={13} /> : <XCircle size={13} />}{run.status === "success" ? "성공" : "실패"}</span><p className="mt-1 text-[11px] text-slate-400">{new Date(run.createdAt).toLocaleString("ko-KR")}</p></td><td className="px-3 py-3"><p className="font-medium">{run.model}</p><p className="mt-1 text-xs text-slate-400">{providerName(run.provider)}</p></td><td className="max-w-sm px-3 py-3"><p className="truncate text-slate-600">{run.userPrompt}</p></td><td className="px-3 py-3 font-mono text-xs"><b>{ms(run.timings.totalMs)}</b><span className="mx-1 text-slate-300">/</span><span className="text-slate-500">{mode === "text" ? ms(run.textMetrics?.ttftMs) : mode === "tts" ? ms(run.speechMetrics?.timeToFirstByteMs) : ms(run.timings.apiMs)}</span></td><td className="whitespace-nowrap px-3 py-3 font-mono text-xs">{mode === "tts" ? <><p>{run.audio ? `${(run.audio.bytes / 1024).toFixed(1)} KB` : "—"}</p><p className="mt-1 text-slate-400">GMS 차감 {gmsCreditLabel(run)}</p></> : <><p><span className="text-slate-400">API I</span> {run.usage.inputTokens ?? "—"} <span className="text-slate-300">·</span> <span className="text-slate-400">O</span> {run.usage.outputTokens ?? "—"}</p><p className="mt-1 text-slate-500"><span className="text-slate-400">GMS 사용</span> {run.usage.totalTokens === undefined ? "—" : `${run.usage.totalTokens.toLocaleString("ko-KR")} tok`} <span className="text-slate-300">·</span> {gmsCreditLabel(run)}</p></>}</td><td className="px-3 py-3"><div className="flex justify-end gap-1"><Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); reuseRun(run); }}><RefreshCcw size={13} /> 재사용</Button><Button variant="ghost" size="sm" className="text-red-500" onClick={(e) => { e.stopPropagation(); void removeRun(run); }} aria-label="기록 삭제"><Trash2 size={14} /></Button></div></td></tr>)}{!filteredLogs.length && <tr><td colSpan={6} className="py-12 text-center text-sm text-slate-400">조건에 맞는 테스트 기록이 없습니다.</td></tr>}</tbody></table></div>
         </Panel></section>
         <footer className="py-8 text-center text-xs text-slate-400">GMS Model Lab · GMS 키는 사용자가 선택한 경우에만 브라우저에 저장되며 서버 로그에는 남기지 않습니다.</footer>
       </div>

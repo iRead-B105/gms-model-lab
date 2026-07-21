@@ -48,7 +48,14 @@ function formatBytes(value: number) {
 }
 
 function UsageCard({ run }: { run: RunLog }) {
-  return <div className="rounded-xl border border-slate-200 p-3 text-xs"><p className="font-semibold text-slate-800">토큰 및 GMS 크레딧</p><p className="mt-2 flex justify-between text-slate-500"><span>실제 Input / Output</span><b className="text-slate-800">{run.usage.inputTokens ?? "—"} / {run.usage.outputTokens ?? "—"}</b></p><p className="mt-1.5 flex justify-between text-slate-500"><span>총 사용 토큰</span><b className="text-slate-800">{run.usage.totalTokens === undefined ? "—" : `${run.usage.totalTokens.toLocaleString("ko-KR")} tok`}</b></p><p className="mt-1.5 flex justify-between text-slate-500"><span>실제 GMS 차감</span><b className="text-slate-800">{formatCredit(run.usage.actualCredit)}</b></p>{run.usage.estimatedCredit !== undefined && <p className="mt-1.5 flex justify-between text-slate-400"><span>참고 추정값</span><span>{formatCredit(run.usage.estimatedCredit)}</span></p>}<p className="mt-2 border-t border-slate-100 pt-2 text-[11px] text-slate-400">토큰은 공급자 응답값, 실제 차감은 동시 요청 1개에서 실행 전후 GMS 잔액 차이로 기록됩니다.</p></div>;
+  const statusMessage = run.usage.creditMeasurementStatus === "unavailable"
+    ? `GMS 차감 측정 실패${run.usage.creditMeasurementError ? ` · ${run.usage.creditMeasurementError}` : ""}`
+    : run.usage.creditMeasurementStatus === "batch-only"
+      ? "병렬 실행이라 차감 크레딧은 배치 단위로만 측정했습니다."
+      : run.usage.creditMeasurementStatus === "measured"
+        ? "실행 전후 GMS 잔액 차이로 측정했습니다."
+        : "기존 기록에는 실행별 차감 측정 정보가 없습니다.";
+  return <div className="rounded-xl border border-slate-200 p-3 text-xs"><p className="font-semibold text-slate-800">API 토큰 및 GMS 사용량</p><p className="mt-2 flex justify-between text-slate-500"><span>API Input / Output</span><b className="text-slate-800">{run.usage.inputTokens ?? "—"} / {run.usage.outputTokens ?? "—"}</b></p><p className="mt-1.5 flex justify-between text-slate-500"><span>GMS 사용 토큰</span><b className="text-slate-800">{run.usage.totalTokens === undefined ? "—" : `${run.usage.totalTokens.toLocaleString("ko-KR")} tok`}</b></p><p className="mt-1.5 flex justify-between text-slate-500"><span>GMS 차감 크레딧</span><b className="text-slate-800">{formatCredit(run.usage.actualCredit)}</b></p>{run.usage.estimatedCredit !== undefined && <p className="mt-1.5 flex justify-between text-slate-400"><span>참고 추정값</span><span>{formatCredit(run.usage.estimatedCredit)}</span></p>}<p className={`mt-2 border-t border-slate-100 pt-2 text-[11px] ${run.usage.creditMeasurementStatus === "unavailable" ? "text-amber-700" : "text-slate-400"}`}>{statusMessage}</p></div>;
 }
 
 function ResponseJsonCard({ run }: { run: RunLog }) {
