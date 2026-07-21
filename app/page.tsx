@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity, BarChart3, Check, ChevronDown, Clock3, Code2, Copy, Download,
   Eye, EyeOff, FileText, History, ImageIcon, KeyRound, LoaderCircle, Play,
@@ -21,12 +21,24 @@ import { ModelSelector } from "@/features/model-lab/components/model-selector";
 import { DefaultableNumber, DefaultableRange, type OptionalNumber } from "@/features/model-lab/components/parameter-control";
 import { RequestValueSummary, type RequestValueRow } from "@/features/model-lab/components/request-value-summary";
 import { ContextImagePicker } from "@/features/model-lab/components/context-image-picker";
+import { LogPagination } from "@/features/model-lab/components/log-pagination";
 import { ImageResult, LatencyChart, TextResult, TtsResult } from "@/features/model-lab/components/results";
-import { calculateBenchmarkStats, formatRate } from "@/features/model-lab/metrics";
+import { calculateBenchmarkStats, formatRate, type BenchmarkStats } from "@/features/model-lab/metrics";
 import { csvCell, formatCredit as credit, formatDuration as ms, providerName, readJsonResponse, runKind } from "@/features/model-lab/utils";
 import { readStoredGmsKey, removeStoredGmsKey, saveStoredGmsKey } from "@/features/model-lab/key-storage";
 
 type CreditInfo = { totalCredit: number; usedCredit: number; remainCredit: number; expiredDate: string };
+type LogsPageResponse = {
+  items: RunLog[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  kindTotal: number;
+  allTotal: number;
+  benchmarkStats: BenchmarkStats;
+  recentBenchmarkRuns: RunLog[];
+};
 const creditDelta = (before: CreditInfo, after: CreditInfo) => Math.max(0, before.remainCredit - after.remainCredit, after.usedCredit - before.usedCredit);
 const gmsCreditLabel = (run: RunLog) => typeof run.usage.actualCredit === "number"
   ? credit(run.usage.actualCredit)
@@ -81,6 +93,15 @@ export default function Home() {
   const [customJson, setCustomJson] = useState("{}");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [logs, setLogs] = useState<RunLog[]>([]);
+  const [logPage, setLogPage] = useState(1);
+  const [logPageSize, setLogPageSize] = useState(25);
+  const [logTotal, setLogTotal] = useState(0);
+  const [kindTotal, setKindTotal] = useState(0);
+  const [allLogTotal, setAllLogTotal] = useState(0);
+  const [logTotalPages, setLogTotalPages] = useState(1);
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [benchmarkStats, setBenchmarkStats] = useState<BenchmarkStats | null>(null);
+  const [benchmarkLogs, setBenchmarkLogs] = useState<RunLog[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -91,6 +112,7 @@ export default function Home() {
   const [creditInfo, setCreditInfo] = useState<CreditInfo | null>(null);
   const [lastBatchCredit, setLastBatchCredit] = useState<number | null>(null);
   const [checkingKey, setCheckingKey] = useState(false);
+  const [exportingLogs, setExportingLogs] = useState(false);
   const [hasStoredKey, setHasStoredKey] = useState(false);
   const [contextImages, setContextImages] = useState<ContextImageInput[]>([]);
   const runAbortRef = useRef<AbortController | null>(null);
@@ -107,23 +129,40 @@ export default function Home() {
   const effectiveSize = imageSizePresets.some((preset) => preset.value === size) ? size : imageSizePresets[0].value;
   const canSelectImageSize = imageSizePresets.length > 1;
   const effectiveBackground = supportsFlexibleOpenAISizes(modelId) && background === "transparent" ? "auto" : background;
-  const modeLogs = useMemo(() => logs.filter((run) => runKind(run) === mode), [logs, mode]);
-  const benchmarkLogs = useMemo(() => modeLogs.filter((run) => run.provider === provider && run.model === modelId), [modeLogs, provider, modelId]);
-  const selected = modeLogs.find((run) => run.id === selectedId) || modeLogs[0] || null;
+  const selected = logs.find((run) => run.id === selectedId) || benchmarkLogs.find((run) => run.id === selectedId) || logs[0] || null;
   const imagePromptConflict = mode === "image" && looksLikePromptAuthoringInstruction(imageSystemPrompt);
 
-  const loadLogs = useCallback(async () => {
+  const logsUrl = useCallback((page: number, pageSize: number, includeBenchmark = true) => {
+    const params = new URLSearchParams({ page: String(page), pageSize: String(pageSize), kind: mode });
+    if (statusFilter !== "all") params.set("status", statusFilter);
+    if (debouncedSearch) params.set("search", debouncedSearch);
+    if (includeBenchmark) {
+      params.set("benchmarkProvider", provider);
+      params.set("benchmarkModel", modelId);
+    }
+    return `/api/logs?${params.toString()}`;
+  }, [debouncedSearch, mode, modelId, provider, statusFilter]);
+
+  const loadLogs = useCallback(async (requestedPage = logPage) => {
     try {
-      const response = await fetch("/api/logs", { cache: "no-store" });
-      const nextLogs = await readJsonResponse<RunLog[] | { error?: string }>(response);
-      if (!response.ok || !Array.isArray(nextLogs)) {
-        throw new Error(!Array.isArray(nextLogs) && nextLogs.error ? nextLogs.error : "로컬 기록을 불러오지 못했습니다.");
+      const response = await fetch(logsUrl(requestedPage, logPageSize), { cache: "no-store" });
+      const result = await readJsonResponse<LogsPageResponse & { error?: string }>(response);
+      if (!response.ok || !Array.isArray(result.items)) {
+        throw new Error(result.error || "로컬 기록을 불러오지 못했습니다.");
       }
-      setLogs(nextLogs);
+      setLogs(result.items);
+      setLogPage(result.page);
+      setLogPageSize(result.pageSize);
+      setLogTotal(result.total);
+      setLogTotalPages(result.totalPages);
+      setKindTotal(result.kindTotal);
+      setAllLogTotal(result.allTotal);
+      setBenchmarkStats(result.benchmarkStats);
+      setBenchmarkLogs(result.recentBenchmarkRuns);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "로컬 기록을 불러오지 못했습니다.");
     }
-  }, []);
+  }, [logPage, logPageSize, logsUrl]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void loadLogs(), 0);
@@ -135,6 +174,11 @@ export default function Home() {
     const interval = window.setInterval(() => void loadLogs(), 5_000);
     return () => window.clearInterval(interval);
   }, [loadLogs, running]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => window.clearTimeout(timer);
+  }, [search]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -153,18 +197,13 @@ export default function Home() {
 
   useEffect(() => () => runAbortRef.current?.abort(), []);
 
-  const stats = useMemo(() => calculateBenchmarkStats(benchmarkLogs, mode), [benchmarkLogs, mode]);
-
-  const filteredLogs = useMemo(() => modeLogs.filter((run) => {
-    const matchesStatus = statusFilter === "all" || run.status === statusFilter;
-    const content = `${run.model} ${run.userPrompt} ${run.systemPrompt} ${run.outputText || ""}`.toLowerCase();
-    return matchesStatus && content.includes(search.toLowerCase());
-  }), [modeLogs, search, statusFilter]);
+  const stats = benchmarkStats || calculateBenchmarkStats([], mode);
 
   function changeMode(next: TestKind) {
     if (running) return;
     setMode(next);
-    setSelectedId(logs.find((run) => runKind(run) === next)?.id || null);
+    setLogPage(1);
+    setSelectedId(null);
     setLiveOutput("");
     setLastBatchCredit(null);
     setNotice("");
@@ -496,7 +535,8 @@ export default function Home() {
     };
     try {
       await Promise.all(Array.from({ length: Math.min(concurrency, repeat) }, () => worker()));
-      await loadLogs();
+      setLogPage(1);
+      await loadLogs(1);
       const latest = results.find((run) => run.status === "success") || results[0];
       if (latest) setSelectedId(latest.id);
       let consumed: number | null = concurrency === 1 && results.some((run) => typeof run.usage.actualCredit === "number")
@@ -581,19 +621,36 @@ export default function Home() {
       const body = await readJsonResponse<{ error?: string }>(response);
       if (!response.ok) throw new Error(body.error || "기록을 삭제하지 못했습니다.");
       if (selectedId === run.id) setSelectedId(null);
-      await loadLogs();
+      await loadLogs(logPage);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "기록을 삭제하지 못했습니다.");
     }
   }
 
-  function exportLogs(format: "json" | "csv") {
-    const data = format === "json" ? JSON.stringify(filteredLogs, null, 2) : [
+  async function exportLogs(format: "json" | "csv") {
+    setExportingLogs(true);
+    try {
+      const firstResponse = await fetch(logsUrl(1, 100, false), { cache: "no-store" });
+      const firstPage = await readJsonResponse<LogsPageResponse & { error?: string }>(firstResponse);
+      if (!firstResponse.ok || !Array.isArray(firstPage.items)) throw new Error(firstPage.error || "내보낼 기록을 불러오지 못했습니다.");
+      const exportedLogs = [...firstPage.items];
+      for (let page = 2; page <= firstPage.totalPages; page += 1) {
+        const response = await fetch(logsUrl(page, 100, false), { cache: "no-store" });
+        const result = await readJsonResponse<LogsPageResponse & { error?: string }>(response);
+        if (!response.ok || !Array.isArray(result.items)) throw new Error(result.error || `${page}페이지 기록을 불러오지 못했습니다.`);
+        exportedLogs.push(...result.items);
+      }
+      const data = format === "json" ? JSON.stringify(exportedLogs, null, 2) : [
       "id,kind,createdAt,status,provider,model,totalMs,apiMs,ttftMs,tokensPerSecond,imageCount,imagesPerMinute,speechTtfbMs,charactersPerSecond,audioBytes,inputTokens,outputTokens,gmsUsedTokens,actualGmsCredit,creditMeasurementStatus,creditMeasurementError,estimatedCredit,prompt",
-      ...filteredLogs.map((run) => [run.id, runKind(run), run.createdAt, run.status, run.provider, run.model, run.timings.totalMs, run.timings.apiMs, run.textMetrics?.ttftMs ?? "", run.textMetrics?.tokensPerSecond ?? "", run.images.length, run.images.length && run.timings.totalMs > 0 ? run.images.length * 60_000 / run.timings.totalMs : "", run.speechMetrics?.timeToFirstByteMs ?? "", run.speechMetrics?.charactersPerSecond ?? "", run.audio?.bytes ?? "", run.usage.inputTokens ?? "", run.usage.outputTokens ?? "", run.usage.totalTokens ?? "", run.usage.actualCredit ?? "", run.usage.creditMeasurementStatus ?? "", run.usage.creditMeasurementError ?? "", run.usage.estimatedCredit ?? "", run.userPrompt].map(csvCell).join(",")),
-    ].join("\n");
-    const url = URL.createObjectURL(new Blob([format === "csv" ? `\uFEFF${data}` : data], { type: format === "json" ? "application/json" : "text/csv;charset=utf-8" }));
-    const anchor = document.createElement("a"); anchor.href = url; anchor.download = `gms-model-lab-${mode}-${new Date().toISOString().slice(0, 10)}.${format}`; anchor.click(); URL.revokeObjectURL(url);
+        ...exportedLogs.map((run) => [run.id, runKind(run), run.createdAt, run.status, run.provider, run.model, run.timings.totalMs, run.timings.apiMs, run.textMetrics?.ttftMs ?? "", run.textMetrics?.tokensPerSecond ?? "", run.images.length, run.images.length && run.timings.totalMs > 0 ? run.images.length * 60_000 / run.timings.totalMs : "", run.speechMetrics?.timeToFirstByteMs ?? "", run.speechMetrics?.charactersPerSecond ?? "", run.audio?.bytes ?? "", run.usage.inputTokens ?? "", run.usage.outputTokens ?? "", run.usage.totalTokens ?? "", run.usage.actualCredit ?? "", run.usage.creditMeasurementStatus ?? "", run.usage.creditMeasurementError ?? "", run.usage.estimatedCredit ?? "", run.userPrompt].map(csvCell).join(",")),
+      ].join("\n");
+      const url = URL.createObjectURL(new Blob([format === "csv" ? `\uFEFF${data}` : data], { type: format === "json" ? "application/json" : "text/csv;charset=utf-8" }));
+      const anchor = document.createElement("a"); anchor.href = url; anchor.download = `gms-model-lab-${mode}-${new Date().toISOString().slice(0, 10)}.${format}`; anchor.click(); URL.revokeObjectURL(url);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "기록을 내보내지 못했습니다.");
+    } finally {
+      setExportingLogs(false);
+    }
   }
 
   return (
@@ -695,15 +752,16 @@ export default function Home() {
             <Panel title={mode === "image" ? "결과 미리보기" : mode === "tts" ? "음성 재생" : "스트리밍 응답"} icon={mode === "image" ? <ImageIcon size={16} /> : mode === "tts" ? <Volume2 size={16} /> : <FileText size={16} />} description={running && mode === "text" ? "첫 번째 요청을 실시간으로 표시 중" : selected ? `${selected.model} · ${new Date(selected.createdAt).toLocaleString("ko-KR")}` : "테스트를 실행하면 결과가 표시됩니다."} action={selected && <Button variant="outline" size="sm" onClick={() => reuseRun(selected)}><Copy size={13} /> 설정 불러오기</Button>}>
               {mode === "text" ? <TextResult run={running ? null : selected} liveOutput={running ? liveOutput : ""} /> : mode === "tts" ? <TtsResult run={selected} /> : <ImageResult run={selected} />}
             </Panel>
-            <Panel title="최근 지연시간" icon={<BarChart3 size={16} />} description={`${modelId} 최근 성공 ${Math.min(12, benchmarkLogs.filter((run) => run.status === "success").length)}회 · ${mode === "text" ? "전체 시간과 TTFT" : mode === "tts" ? "전체 시간과 첫 바이트" : "전체 시간과 API 생성"}`}>
+            <Panel title="최근 지연시간" icon={<BarChart3 size={16} />} description={`${modelId} 최근 성공 ${benchmarkLogs.length}회 · ${mode === "text" ? "전체 시간과 TTFT" : mode === "tts" ? "전체 시간과 첫 바이트" : "전체 시간과 API 생성"}`}>
               <LatencyChart logs={benchmarkLogs} selectedId={selectedId} onSelect={setSelectedId} kind={mode} />
             </Panel>
           </div>
         </section>
 
-        <section className="mt-5"><Panel title="로컬 테스트 기록" icon={<History size={16} />} description={`${mode === "image" ? "이미지" : mode === "tts" ? "TTS" : "텍스트"} ${modeLogs.length}개 · 전체 ${logs.length}개 기록`} action={<div className="flex gap-2"><Button variant="outline" size="sm" onClick={() => exportLogs("csv")}><Download size={13} /> CSV</Button><Button variant="outline" size="sm" onClick={() => exportLogs("json")}>JSON</Button></div>}>
-          <div className="mb-4 flex flex-col gap-2 sm:flex-row"><div className="relative flex-1"><Search className="absolute left-3 top-2.5 text-slate-400" size={16} /><Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="모델, 프롬프트 또는 응답 검색" className="pl-9" /></div><Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="sm:w-36"><option value="all">모든 상태</option><option value="success">성공</option><option value="error">실패</option></Select></div>
-          <div className="overflow-x-auto"><table className="w-full min-w-[1020px] text-left text-sm"><thead><tr className="border-y border-slate-100 text-[11px] uppercase tracking-wider text-slate-400"><th className="px-3 py-3 font-semibold">상태 / 시간</th><th className="px-3 py-3 font-semibold">모델</th><th className="px-3 py-3 font-semibold">프롬프트</th><th className="px-3 py-3 font-semibold">{mode === "text" ? "전체 / TTFT" : mode === "tts" ? "전체 / 첫 바이트" : "전체 / API"}</th><th className="px-3 py-3 font-semibold">{mode === "tts" ? "오디오 / GMS 사용량" : "Input·Output / GMS 사용량"}</th><th className="px-3 py-3 font-semibold text-right">작업</th></tr></thead><tbody>{filteredLogs.map((run) => <tr key={run.id} onClick={() => setSelectedId(run.id)} className={`cursor-pointer border-b border-slate-100 hover:bg-slate-50 ${selected?.id === run.id ? "bg-slate-50" : ""}`}><td className="px-3 py-3"><span className={`inline-flex items-center gap-1.5 text-xs font-semibold ${run.status === "success" ? "text-emerald-700" : "text-red-600"}`}>{run.status === "success" ? <Check size={13} /> : <XCircle size={13} />}{run.status === "success" ? "성공" : "실패"}</span><p className="mt-1 text-[11px] text-slate-400">{new Date(run.createdAt).toLocaleString("ko-KR")}</p></td><td className="px-3 py-3"><p className="font-medium">{run.model}</p><p className="mt-1 text-xs text-slate-400">{providerName(run.provider)}</p></td><td className="max-w-sm px-3 py-3"><p className="truncate text-slate-600">{run.userPrompt}</p></td><td className="px-3 py-3 font-mono text-xs"><b>{ms(run.timings.totalMs)}</b><span className="mx-1 text-slate-300">/</span><span className="text-slate-500">{mode === "text" ? ms(run.textMetrics?.ttftMs) : mode === "tts" ? ms(run.speechMetrics?.timeToFirstByteMs) : ms(run.timings.apiMs)}</span></td><td className="whitespace-nowrap px-3 py-3 font-mono text-xs">{mode === "tts" ? <><p>{run.audio ? `${(run.audio.bytes / 1024).toFixed(1)} KB` : "—"}</p><p className="mt-1 text-slate-400">GMS 차감 {gmsCreditLabel(run)}</p></> : <><p><span className="text-slate-400">API I</span> {run.usage.inputTokens ?? "—"} <span className="text-slate-300">·</span> <span className="text-slate-400">O</span> {run.usage.outputTokens ?? "—"}</p><p className="mt-1 text-slate-500"><span className="text-slate-400">GMS 사용</span> {run.usage.totalTokens === undefined ? "—" : `${run.usage.totalTokens.toLocaleString("ko-KR")} tok`} <span className="text-slate-300">·</span> {gmsCreditLabel(run)}</p></>}</td><td className="px-3 py-3"><div className="flex justify-end gap-1"><Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); reuseRun(run); }}><RefreshCcw size={13} /> 재사용</Button><Button variant="ghost" size="sm" className="text-red-500" onClick={(e) => { e.stopPropagation(); void removeRun(run); }} aria-label="기록 삭제"><Trash2 size={14} /></Button></div></td></tr>)}{!filteredLogs.length && <tr><td colSpan={6} className="py-12 text-center text-sm text-slate-400">조건에 맞는 테스트 기록이 없습니다.</td></tr>}</tbody></table></div>
+        <section className="mt-5"><Panel title="로컬 테스트 기록" icon={<History size={16} />} description={`${mode === "image" ? "이미지" : mode === "tts" ? "TTS" : "텍스트"} ${kindTotal.toLocaleString("ko-KR")}개 · 검색 결과 ${logTotal.toLocaleString("ko-KR")}개 · 전체 ${allLogTotal.toLocaleString("ko-KR")}개`} action={<div className="flex gap-2"><Button variant="outline" size="sm" disabled={exportingLogs} onClick={() => void exportLogs("csv")}><Download size={13} /> CSV</Button><Button variant="outline" size="sm" disabled={exportingLogs} onClick={() => void exportLogs("json")}>{exportingLogs ? "준비 중" : "JSON"}</Button></div>}>
+          <div className="mb-4 flex flex-col gap-2 sm:flex-row"><div className="relative flex-1"><Search className="absolute left-3 top-2.5 text-slate-400" size={16} /><Input value={search} onChange={(e) => { setSearch(e.target.value); setLogPage(1); }} placeholder="모델, 프롬프트 또는 응답 검색" className="pl-9" /></div><Select value={statusFilter} onChange={(e) => { setStatusFilter(e.target.value); setLogPage(1); }} className="sm:w-36"><option value="all">모든 상태</option><option value="success">성공</option><option value="error">실패</option></Select></div>
+          <div className="overflow-x-auto"><table className="w-full min-w-[1020px] text-left text-sm"><thead><tr className="border-y border-slate-100 text-[11px] uppercase tracking-wider text-slate-400"><th className="px-3 py-3 font-semibold">상태 / 시간</th><th className="px-3 py-3 font-semibold">모델</th><th className="px-3 py-3 font-semibold">프롬프트</th><th className="px-3 py-3 font-semibold">{mode === "text" ? "전체 / TTFT" : mode === "tts" ? "전체 / 첫 바이트" : "전체 / API"}</th><th className="px-3 py-3 font-semibold">{mode === "tts" ? "오디오 / GMS 사용량" : "Input·Output / GMS 사용량"}</th><th className="px-3 py-3 font-semibold text-right">작업</th></tr></thead><tbody>{logs.map((run) => <tr key={run.id} onClick={() => setSelectedId(run.id)} className={`cursor-pointer border-b border-slate-100 hover:bg-slate-50 ${selected?.id === run.id ? "bg-slate-50" : ""}`}><td className="px-3 py-3"><span className={`inline-flex items-center gap-1.5 text-xs font-semibold ${run.status === "success" ? "text-emerald-700" : "text-red-600"}`}>{run.status === "success" ? <Check size={13} /> : <XCircle size={13} />}{run.status === "success" ? "성공" : "실패"}</span><p className="mt-1 text-[11px] text-slate-400">{new Date(run.createdAt).toLocaleString("ko-KR")}</p></td><td className="px-3 py-3"><p className="font-medium">{run.model}</p><p className="mt-1 text-xs text-slate-400">{providerName(run.provider)}</p></td><td className="max-w-sm px-3 py-3"><p className="truncate text-slate-600">{run.userPrompt}</p></td><td className="px-3 py-3 font-mono text-xs"><b>{ms(run.timings.totalMs)}</b><span className="mx-1 text-slate-300">/</span><span className="text-slate-500">{mode === "text" ? ms(run.textMetrics?.ttftMs) : mode === "tts" ? ms(run.speechMetrics?.timeToFirstByteMs) : ms(run.timings.apiMs)}</span></td><td className="whitespace-nowrap px-3 py-3 font-mono text-xs">{mode === "tts" ? <><p>{run.audio ? `${(run.audio.bytes / 1024).toFixed(1)} KB` : "—"}</p><p className="mt-1 text-slate-400">GMS 차감 {gmsCreditLabel(run)}</p></> : <><p><span className="text-slate-400">API I</span> {run.usage.inputTokens ?? "—"} <span className="text-slate-300">·</span> <span className="text-slate-400">O</span> {run.usage.outputTokens ?? "—"}</p><p className="mt-1 text-slate-500"><span className="text-slate-400">GMS 사용</span> {run.usage.totalTokens === undefined ? "—" : `${run.usage.totalTokens.toLocaleString("ko-KR")} tok`} <span className="text-slate-300">·</span> {gmsCreditLabel(run)}</p></>}</td><td className="px-3 py-3"><div className="flex justify-end gap-1"><Button variant="ghost" size="sm" onClick={(e) => { e.stopPropagation(); reuseRun(run); }}><RefreshCcw size={13} /> 재사용</Button><Button variant="ghost" size="sm" className="text-red-500" onClick={(e) => { e.stopPropagation(); void removeRun(run); }} aria-label="기록 삭제"><Trash2 size={14} /></Button></div></td></tr>)}{!logs.length && <tr><td colSpan={6} className="py-12 text-center text-sm text-slate-400">조건에 맞는 테스트 기록이 없습니다.</td></tr>}</tbody></table></div>
+          <LogPagination page={logPage} pageSize={logPageSize} total={logTotal} totalPages={logTotalPages} onPageChange={setLogPage} onPageSizeChange={(nextPageSize) => { setLogPageSize(nextPageSize); setLogPage(1); }} />
         </Panel></section>
         <footer className="py-8 text-center text-xs text-slate-400">GMS Model Lab · GMS 키는 사용자가 선택한 경우에만 브라우저에 저장되며 서버 로그에는 남기지 않습니다.</footer>
       </div>
