@@ -6,58 +6,34 @@ GMS에서 제공하는 이미지·텍스트·TTS 모델의 응답 속도, 토큰
 
 ### 준비 사항
 
-- Node.js 22.13 이상
+- Node.js 22.13 이상과 npm
 - GMS Key
 
-먼저 Node.js와 npm이 설치되어 있는지 확인합니다.
+Windows와 macOS 모두 같은 명령을 사용합니다. Windows에서는 PowerShell 또는 Git Bash, macOS에서는 Terminal을 열고 먼저 Node.js와 npm이 설치되어 있는지 확인합니다.
 
 ```bash
 node -v
 npm -v
 ```
 
-`node: command not found`가 나오면 [Node.js 공식 사이트](https://nodejs.org/)에서 Node.js 22.13 이상을 설치한 뒤 터미널을 다시 엽니다.
+명령을 찾을 수 없거나 Node.js 버전이 22.13보다 낮으면 [Node.js 공식 사이트](https://nodejs.org/)에서 최신 LTS 버전을 설치한 뒤 터미널을 다시 엽니다. npm은 Node.js와 함께 설치됩니다.
 
-### pnpm 설치
+### 설치 및 실행
 
-Corepack을 사용할 수 있다면 다음 방법을 권장합니다.
-
-```bash
-corepack enable
-corepack prepare pnpm@10 --activate
-pnpm -v
-```
-
-Windows에서 권한 오류가 발생하거나 `corepack` 명령이 없다면 npm으로 pnpm을 설치합니다.
-
-```bash
-npm install -g pnpm@10
-```
-
-Git Bash를 사용 중이라면 설치 후 명령어 경로를 새로 불러옵니다.
-
-```bash
-hash -r
-pnpm -v
-```
-
-전역 패키지를 설치할 권한이 없는 환경에서는 pnpm을 설치하지 않고 `npx`로 실행할 수 있습니다.
+프로젝트 폴더에서 아래 명령을 순서대로 실행합니다.
 
 ```bash
 npx pnpm@10 install
 npx pnpm@10 dev
 ```
 
-### 의존성 설치 및 실행
-
-프로젝트 폴더에서 아래 명령을 실행합니다. `pnpm install`은 처음 실행하거나 의존성이 변경되었을 때 필요합니다.
+`npx`가 pnpm 다운로드 여부를 물으면 `y`를 입력합니다. 이 방식은 pnpm을 전역으로 설치하지 않으므로 Windows와 macOS에서 관리자 권한 없이 동일하게 사용할 수 있습니다. 의존성이 이미 설치되어 있다면 다음부터는 실행 명령만 사용하면 됩니다.
 
 ```bash
-pnpm install
-pnpm dev
+npx pnpm@10 dev
 ```
 
-브라우저에서 [http://localhost:3000](http://localhost:3000)을 열고 다음 순서로 사용합니다.
+터미널에 `Ready`가 표시되면 브라우저에서 [http://localhost:3000](http://localhost:3000)을 열고 다음 순서로 사용합니다. 서버를 종료할 때는 실행 중인 터미널에서 `Ctrl+C`를 누릅니다.
 
 1. GMS Key를 입력하고 **키·전체 모델 확인**을 누릅니다.
 2. 이미지, 텍스트 또는 TTS 탭을 선택합니다.
@@ -163,17 +139,19 @@ GMS Key는 기본적으로 현재 페이지에서만 사용합니다.
 
 ## 개발 및 점검
 
-```powershell
-pnpm typecheck
-pnpm lint
-pnpm test
-pnpm build
+Windows와 macOS에서 동일하게 다음 명령을 사용합니다.
+
+```bash
+npx pnpm@10 typecheck
+npx pnpm@10 lint
+npx pnpm@10 test
+npx pnpm@10 build
 ```
 
 전체 검사는 다음 명령으로 한 번에 실행할 수 있습니다.
 
-```powershell
-pnpm check
+```bash
+npx pnpm@10 check
 ```
 
 자동 검사에서는 크레딧이 발생하는 실제 GMS 생성 API를 호출하지 않습니다.
